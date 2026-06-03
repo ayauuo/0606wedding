@@ -1591,6 +1591,11 @@ watch(
       user-select: none;
     }
 
+    /* 拍完照後（重拍提示）、尚未進濾鏡：縮圖列再往下；+ 數值愈大愈下 */
+    &.is-post-shoot .left-panel.absolute-panel:not(.has-filter-column).is-positioned {
+      transform: translateY(calc(-50% - clamp(24px, 4vh, 64px) + 40px)) translateX(-240px);
+    }
+
     .right-panel {
       align-self: stretch;
       flex: 1 1 auto;
@@ -1616,16 +1621,24 @@ watch(
     // background-color: #ff4d4f;
     position: absolute;
     top: 50%;
-    /* 在垂直置中基礎上略往下移，對齊大預覽 */
-    transform: translateY(calc(-50% - clamp(24px, 4vh, 64px)));
     /* 高於 .right-panel（全寬 flex 子層），否則透明區域會攔截左側縮圖點擊 */
     z-index: 40;
-    /* left 只算一次（leftPanelStyle），之後不再更新 */
+    /* left 由 leftPanelStyle 計算；水平微調僅在拍照階段用 translateX，不影響濾鏡頁 */
     opacity: 0;
     transition: opacity 0.15s ease-out;
 
     &.is-positioned {
       opacity: 1;
+    }
+
+    /* 濾鏡階段：維持原本垂直置中，不額外水平位移 */
+    &.has-filter-column.is-positioned {
+      transform: translateY(calc(-50% - clamp(24px, 4vh, 64px)));
+    }
+
+    /* 拍照階段：縮圖列再往左；數值愈負愈左（例：-50px） */
+    &:not(.has-filter-column).is-positioned {
+      transform: translateY(calc(-50% - clamp(24px, 4vh, 64px))) translateX(-240px);
     }
   }
 
