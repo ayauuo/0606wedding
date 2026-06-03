@@ -9,6 +9,7 @@ const { templates, selectedTemplate, selectTemplate, showScreen } = usePhotoboot
 const {
   getChooseLayoutBackground,
   getChooseLayoutMsgbox,
+  getChooseLayoutLabelImage,
   projectVariant,
   isProject2,
 } = useProjectVariant()
@@ -33,9 +34,19 @@ const msgboxRepeatUrl = computed(() => {
 })
 
 const msgboxVisible = ref(false)
-const templateListRef = ref<HTMLElement | null>(null)
-/** 橫向版型列的捲動容器；需用非 passive 的 wheel 才能把垂直滾輪轉成左右捲動 */
-const templateScrollRef = ref<HTMLElement | null>(null)
+const hScrollRef = ref<HTMLElement | null>(null)
+const canScrollLeft = ref(false)
+const canScrollRight = ref(false)
+const suppressCardClick = ref(false)
+let stripResizeObs: ResizeObserver | null = null
+
+const touchStrip = {
+  active: false,
+  startX: 0,
+  startScroll: 0,
+  moved: false,
+}
+
 const hasSelection = computed(() => !!selectedTemplate.value)
 
 /** 版型顯示順序：1 號專案 bk01～bk06；2 號專案 bk01、bk02 */
@@ -55,7 +66,87 @@ function getTemplateCardClass(t: Template) {
   return `screen-template__card--${t.id}`
 }
 
+function updateScrollButtons() {
+  const el = hScrollRef.value
+  if (!el) {
+    canScrollLeft.value = false
+    canScrollRight.value = false
+    return
+  }
+  const max = el.scrollWidth - el.clientWidth
+  if (max <= 1) {
+    canScrollLeft.value = false
+    canScrollRight.value = false
+    return
+  }
+  canScrollLeft.value = el.scrollLeft > 2
+  canScrollRight.value = el.scrollLeft < max - 2
+}
+
+function onStripScroll() {
+  updateScrollButtons()
+}
+
+function scrollStrip(direction: -1 | 1) {
+  const el = hScrollRef.value
+  if (!el) return
+  const step = Math.round(Math.max(380, el.clientWidth * 0.48))
+  el.scrollBy({ left: direction * step, behavior: 'smooth' })
+}
+
+function onStripTouchStart(e: TouchEvent) {
+  const touch = e.touches[0]
+  if (!touch) return
+  const el = hScrollRef.value
+  if (!el) return
+  touchStrip.active = true
+  touchStrip.startX = touch.clientX
+  touchStrip.startScroll = el.scrollLeft
+  touchStrip.moved = false
+}
+
+function onStripTouchMove(e: TouchEvent) {
+  if (!touchStrip.active) return
+  const touch = e.touches[0]
+  if (!touch) return
+  const el = hScrollRef.value
+  if (!el) return
+  const dx = touch.clientX - touchStrip.startX
+  if (Math.abs(dx) > 6) {
+    touchStrip.moved = true
+    e.preventDefault()
+  }
+  el.scrollLeft = touchStrip.startScroll - dx
+}
+
+function onStripTouchEnd() {
+  if (touchStrip.moved) {
+    suppressCardClick.value = true
+    setTimeout(() => {
+      suppressCardClick.value = false
+    }, 100)
+  }
+  touchStrip.active = false
+  touchStrip.moved = false
+}
+
+function onTemplatesWheel(e: WheelEvent) {
+  const el = hScrollRef.value
+  if (!el) return
+  if (e.ctrlKey) return
+  const max = el.scrollWidth - el.clientWidth
+  if (max <= 0) return
+  const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
+  if (horizontal === 0) return
+  const sl = el.scrollLeft
+  if (horizontal > 0 && sl >= max - 0.5) return
+  if (horizontal < 0 && sl <= 0.5) return
+  e.preventDefault()
+  el.scrollLeft = sl + horizontal
+}
+
 function onCardClick(t: Template) {
+  if (suppressCardClick.value) return
   if (selectedTemplate.value?.id === t.id) {
     msgboxVisible.value = true
     return
@@ -64,12 +155,8 @@ function onCardClick(t: Template) {
 }
 
 function confirmTemplate() {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/60461173-9774-483b-a750-822bb1590c42', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'ScreenTemplate.vue:confirmTemplate', message: 'confirmTemplate_called', data: { hasSelection: !!selectedTemplate.value }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'H1' }) }).catch(() => {})
-  // #endregion
   unlockCountdownAudio()
   msgboxVisible.value = false
-  // 立即切到拍照頁；若仍用 nextTick 導致未切換，改同步呼叫確保進入拍攝畫面
   showScreen('shoot')
 }
 
@@ -81,40 +168,34 @@ watch(selectedTemplate, (v) => {
   if (!v) msgboxVisible.value = false
 })
 
-function onTemplateScrollWheel(e: WheelEvent) {
-  const el = templateScrollRef.value
-  if (!el || el.scrollWidth <= el.clientWidth) return
-  const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
-  if (horizontal === 0) return
-  el.scrollLeft += horizontal
-  e.preventDefault()
-}
-
-let templateScrollEl: HTMLElement | null = null
-function scrollTemplateStripToStart() {
-  const el = templateScrollRef.value
-  if (el) el.scrollLeft = 0
-}
+watch(orderedTemplates, () => {
+  nextTick(() => {
+    const el = hScrollRef.value
+    if (el) el.scrollLeft = 0
+    updateScrollButtons()
+  })
+})
 
 onMounted(() => {
-  templateScrollEl = templateScrollRef.value
-  templateScrollEl?.addEventListener('wheel', onTemplateScrollWheel, { passive: false })
-  scrollTemplateStripToStart()
+  nextTick(() => {
+    const el = hScrollRef.value
+    el?.addEventListener('wheel', onTemplatesWheel, { passive: false })
+    updateScrollButtons()
+    if (typeof ResizeObserver !== 'undefined' && el) {
+      stripResizeObs = new ResizeObserver(() => updateScrollButtons())
+      stripResizeObs.observe(el)
+    }
+    window.addEventListener('resize', updateScrollButtons)
+  })
 })
 
 onUnmounted(() => {
-  templateScrollEl?.removeEventListener('wheel', onTemplateScrollWheel)
-  templateScrollEl = null
+  const el = hScrollRef.value
+  el?.removeEventListener('wheel', onTemplatesWheel)
+  stripResizeObs?.disconnect()
+  stripResizeObs = null
+  window.removeEventListener('resize', updateScrollButtons)
 })
-
-watch(
-  () => orderedTemplates.value.length,
-  () => {
-    nextTick(() => scrollTemplateStripToStart())
-  }
-)
-
-// 相機改由 ScreenShoot.vue 進入拍照頁時才啟動，不在此預熱
 </script>
 
 <template>
@@ -124,44 +205,77 @@ watch(
     aria-label="選版型畫面"
     :style="templateScreenStyle"
   >
-    <!-- 標題已繪於 background.png（選擇版型），不重複疊字 -->
     <h1 class="screen-template__title" aria-hidden="true">選擇版型</h1>
-    <div ref="templateScrollRef" class="screen-template__scroll">
-      <!-- <button
-        v-show="hasSelection"
-        type="button"
-        class="screen-template__start-btn"
-        @click="confirmTemplate"
-      >
-        開始拍照
-      </button> -->
-      <div class="screen-template__row-wrap">
-        <div
-          ref="templateListRef"
-          class="screen-template__grid"
-          :class="{
-            'has-selection': hasSelection,
-            'screen-template__grid--many': orderedTemplates.length > 2,
-          }"
+    <div class="screen-template__scroll">
+      <div class="screen-template__strip">
+        <button
+          type="button"
+          class="screen-template__scroll-btn screen-template__scroll-btn--prev"
+          aria-label="向左顯示更多版型"
+          :disabled="!canScrollLeft"
+          @click.stop="scrollStrip(-1)"
         >
-          <button
-            v-for="(t, index) in orderedTemplates"
-            :key="t.id"
-            type="button"
-            class="screen-template__card"
-            :class="[getTemplateCardClass(t), { 'is-selected': selectedTemplate?.id === t.id }]"
-            @click="onCardClick(t)"
+          ‹
+        </button>
+        <div
+          ref="hScrollRef"
+          class="screen-template__h-scroll"
+          role="list"
+          aria-label="版型列表；可手指左右滑動、或使用左右按鈕檢視"
+          @scroll.passive="onStripScroll"
+          @touchstart.passive="onStripTouchStart"
+          @touchmove="onStripTouchMove"
+          @touchend="onStripTouchEnd"
+          @touchcancel="onStripTouchEnd"
+        >
+          <div
+            class="screen-template__row"
+            :class="{ 'has-selection': hasSelection }"
           >
-            <div class="screen-template__card-preview">
-              <img
-                class="screen-template__card-img"
-                :src="t.preview"
-                :alt="t.id"
-                loading="lazy"
-              />
+            <div
+              v-for="t in orderedTemplates"
+              :key="t.id"
+              class="screen-template__column"
+              role="listitem"
+              @click="onCardClick(t)"
+            >
+              <div class="screen-template__label-slot">
+                <img
+                  class="screen-template__label-img"
+                  :src="getChooseLayoutLabelImage(t.id)"
+                  :alt="`${t.id} 版型標籤`"
+                  loading="lazy"
+                  draggable="false"
+                />
+              </div>
+              <div class="screen-template__card-slot">
+                <div
+                  class="screen-template__card"
+                  :class="[getTemplateCardClass(t), { 'is-selected': selectedTemplate?.id === t.id }]"
+                >
+                  <div class="screen-template__card-preview">
+                    <img
+                      class="screen-template__card-img"
+                      :src="t.preview"
+                      :alt="t.id"
+                      loading="lazy"
+                      draggable="false"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
-          </button>
+          </div>
         </div>
+        <button
+          type="button"
+          class="screen-template__scroll-btn screen-template__scroll-btn--next"
+          aria-label="向右顯示更多版型"
+          :disabled="!canScrollRight"
+          @click.stop="scrollStrip(1)"
+        >
+          ›
+        </button>
       </div>
     </div>
     <div
@@ -204,7 +318,6 @@ watch(
 <style lang="scss" scoped>
 @use '@/styles/variables' as *;
 
-/* 底圖已含右下角單位名稱，避免與全站 Footer 重疊 */
 :global(.photobooth-app:has(.screen--template.active) .app-footer) {
   display: none;
 }
@@ -215,39 +328,142 @@ watch(
   min-height: 100vh;
   padding: 0;
   overflow: hidden;
+  touch-action: pan-x pan-y;
   background-color: #4a1520;
   background-repeat: no-repeat;
   background-position: center center;
   background-size: cover;
 }
 
-/* 右側版型區：對齊設計稿「選擇版型」標題下方、人物右側 */
 .screen-template__scroll {
   position: absolute;
-  left: 32%;
-  right: 3%;
+  left: 4%;
+  right: 4%;
   top: 14%;
-  bottom: 11%;
-  overflow-x: auto;
-  overflow-y: hidden;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-x: contain;
-  padding: 0 clamp(8px, 1vw, 16px);
+  bottom: 5%;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  align-items: center;
   justify-content: center;
   min-width: 0;
   z-index: 1;
 }
 
-.screen-template__row-wrap {
+.screen-template__strip {
   display: flex;
-  justify-content: flex-start;
+  flex-direction: row;
   align-items: center;
+  gap: clamp(10px, 1.4vw, 16px);
+  width: 100%;
+  min-width: 0;
+}
+
+.screen-template__scroll-btn {
+  flex-shrink: 0;
+  width: clamp(44px, 5.5vw, 60px);
+  min-height: min(220px, 36vh);
+  padding: 0;
+  border: none;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.35);
+  color: #4a3428;
+  font-size: clamp(28px, 4vw, 40px);
+  line-height: 1;
+  cursor: pointer;
+  transition: opacity 0.2s, background 0.2s;
+
+  &:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.55);
+  }
+
+  &:disabled {
+    opacity: 0.25;
+    cursor: default;
+  }
+}
+
+.screen-template__h-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
+  padding-bottom: 8px;
+  padding-inline: clamp(6px, 1.2vw, 16px);
+  scroll-padding-inline: 12px;
+}
+
+.screen-template__row {
+  --template-label-height: clamp(40px, 5.5vh, 72px);
+  --template-preview-height: min(70vh, 680px);
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: clamp(24px, 3.5vw, 56px);
   width: max-content;
-  min-width: 100%;
-  height: 100%;
+  margin-block: auto;
+
+  &.has-selection .screen-template__card:not(.is-selected) {
+    transform: scale(0.96);
+    opacity: 0.88;
+  }
+}
+
+.screen-template__column {
+  --template-card-width: clamp(260px, 26vw, 400px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(12px, 2vh, 24px);
+  flex: 0 0 auto;
+  cursor: pointer;
+  touch-action: pan-x;
+
+  &:has(.screen-template__card--bk03) {
+    --template-card-width: clamp(340px, 34vw, 520px);
+  }
+}
+
+.screen-template__label-slot {
+  flex: 0 0 auto;
+  width: var(--template-card-width);
+  height: var(--template-label-height);
+  margin-top: 80px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.screen-template__label-img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.screen-template__card-slot {
+  flex: 0 0 auto;
+  width: var(--template-card-width);
+  min-height: var(--template-preview-height);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.screen-template__column:has(.screen-template__card--bk03) .screen-template__card-slot {
+  align-items: center;
 }
 
 .screen-template__title {
@@ -262,60 +478,17 @@ watch(
   border: 0;
 }
 
-.screen-template__start-btn {
-  position: absolute;
-  top: 140px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 5;
-  padding: 16px 48px;
-  font-size: 28px;
-  font-weight: bold;
-  color: #fff;
-  background: var(--accent, #ff4d4f);
-  border: none;
-  border-radius: 12px;
-  cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-
-  &:hover {
-    opacity: 0.95;
-  }
-}
-
-.screen-template__grid {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: flex-start;
-  gap: clamp(10px, 1.6vw, 28px);
-  width: max-content;
-  padding: 0 clamp(4px, 0.5vw, 12px);
-
-  &.has-selection :deep(.screen-template__card:not(.is-selected)) {
-    transform: scale(0.96);
-    opacity: 0.88;
-  }
-
-  /* 六個版型時略縮卡片，避免左側被 overflow 裁切 */
-  &.screen-template__grid--many .screen-template__card-preview {
-    width: clamp(150px, 13.5vw, 260px);
-  }
-}
-
 .screen-template__card {
   border: none;
   border-radius: $radius-xl;
   background: transparent;
   padding: 0;
   cursor: pointer;
-  transition: transform 0.3s ease;
+  transition: transform 0.3s ease, opacity 0.3s ease;
   z-index: 1;
   flex: 0 0 auto;
-  align-self: center;
-  width: fit-content;
-  height: fit-content;
   display: block;
+  touch-action: pan-x;
 
   &.is-selected {
     transform: scale(1.04);
@@ -333,16 +506,30 @@ watch(
 .screen-template__card-preview {
   display: block;
   line-height: 0;
-  transition: transform 0.3s ease;
-  width: clamp(240px, 19.5vw, 380px);
+  width: var(--template-card-width);
+  max-width: var(--template-card-width);
   height: auto;
+}
+
+.screen-template__card--bk03 .screen-template__card-preview {
+  width: var(--template-card-width);
+  max-width: var(--template-card-width);
 }
 
 .screen-template__card-img {
   width: 100%;
   height: auto;
-  max-height: min(78vh, 820px);
   display: block;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.screen-template__card:not(.screen-template__card--bk03) .screen-template__card-img {
+  max-height: min(70vh, 680px);
+}
+
+.screen-template__card--bk03 .screen-template__card-img {
+  max-height: min(48vh, 500px);
 }
 
 .screen-template__msgbox {

@@ -61,6 +61,13 @@ export function useProjectVariant() {
       : `/assets/templates/chooselayout/msgbox/${file}`
   }
 
+  /** 選版型列上方標籤圖（bk01text.png～bk06text.png） */
+  function getChooseLayoutLabelImage(templateId: string): string {
+    return projectVariant.value === '2'
+      ? p2('chooselayout', `${templateId}text.png`)
+      : `/assets/templates/chooselayout/${templateId}text.png`
+  }
+
   function getIdleCoverSlides(): string[] {
     if (projectVariant.value === '2') {
       return ['/assets/templates/IdlePage/cover/2/cover.png']
@@ -161,6 +168,7 @@ export function useProjectVariant() {
     getChooseLayoutPreview,
     getChooseLayoutBackground,
     getChooseLayoutMsgbox,
+    getChooseLayoutLabelImage,
     getIdleCoverSlides,
     getIdleBasePath,
     getQrCodePageBackground,

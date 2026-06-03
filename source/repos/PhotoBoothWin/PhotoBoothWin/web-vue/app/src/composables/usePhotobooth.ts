@@ -78,7 +78,7 @@ function buildTemplatesProject1(): Template[] {
     {
       id: 'bk02',
       preview: getChooseLayoutPreview('bk02'),
-      shotCount: 4,
+      shotCount: 2,
       sizeKey: '4x6_2IN',
       captureW: 480,
       captureH: 360,
@@ -134,7 +134,7 @@ function buildTemplatesProject1(): Template[] {
     {
       id: 'bk06',
       preview: getChooseLayoutPreview('bk06'),
-      shotCount: 4,
+      shotCount: 2,
       sizeKey: '4x6_2IN',
       captureW: 500,
       captureH: 500,
