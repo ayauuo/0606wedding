@@ -49,11 +49,11 @@ const touchStrip = {
 
 const hasSelection = computed(() => !!selectedTemplate.value)
 
-/** 版型顯示順序：1 號專案 bk01～bk06；2 號專案 bk01、bk02 */
+/** 版型顯示順序：1 號專案 bk01～bk06；2 號專案 bk01～bk10 */
 const orderedTemplates = computed(() => {
   void projectVariant.value
   const order = isProject2.value
-    ? (['bk01', 'bk02'] as const)
+    ? (['bk01', 'bk02', 'bk03', 'bk04', 'bk05', 'bk06', 'bk07', 'bk08', 'bk09', 'bk10'] as const)
     : (['bk01', 'bk02', 'bk03', 'bk04', 'bk05', 'bk06'] as const)
   const byId = new Map(templates.value.map((t) => [t.id, t] as const))
   const ordered = order.map((id) => byId.get(id)).filter((t): t is Template => !!t)
@@ -201,6 +201,7 @@ onUnmounted(() => {
 <template>
   <div
     class="screen screen--template"
+    :class="{ 'screen--template--p2': isProject2 }"
     role="region"
     aria-label="選版型畫面"
     :style="templateScreenStyle"
@@ -425,7 +426,8 @@ onUnmounted(() => {
   cursor: pointer;
   touch-action: pan-x;
 
-  &:has(.screen-template__card--bk03) {
+  /* 專案 1：bk03 為橫式版型，預覽卡需較寬、較矮 */
+  .screen--template:not(.screen--template--p2) &:has(.screen-template__card--bk03) {
     --template-card-width: clamp(340px, 34vw, 520px);
   }
 }
@@ -462,7 +464,9 @@ onUnmounted(() => {
   justify-content: center;
 }
 
-.screen-template__column:has(.screen-template__card--bk03) .screen-template__card-slot {
+.screen--template:not(.screen--template--p2)
+  .screen-template__column:has(.screen-template__card--bk03)
+  .screen-template__card-slot {
   align-items: center;
 }
 
@@ -511,7 +515,7 @@ onUnmounted(() => {
   height: auto;
 }
 
-.screen-template__card--bk03 .screen-template__card-preview {
+.screen--template:not(.screen--template--p2) .screen-template__card--bk03 .screen-template__card-preview {
   width: var(--template-card-width);
   max-width: var(--template-card-width);
 }
@@ -519,16 +523,16 @@ onUnmounted(() => {
 .screen-template__card-img {
   width: 100%;
   height: auto;
+  max-height: min(70vh, 680px);
   display: block;
+  object-fit: contain;
+  object-position: center;
   -webkit-user-drag: none;
   user-select: none;
 }
 
-.screen-template__card:not(.screen-template__card--bk03) .screen-template__card-img {
-  max-height: min(70vh, 680px);
-}
-
-.screen-template__card--bk03 .screen-template__card-img {
+/* 專案 1 橫式 bk03 */
+.screen--template:not(.screen--template--p2) .screen-template__card--bk03 .screen-template__card-img {
   max-height: min(48vh, 500px);
 }
 

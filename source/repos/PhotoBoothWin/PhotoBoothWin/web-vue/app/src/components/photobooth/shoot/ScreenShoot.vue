@@ -35,6 +35,7 @@ const {
   getShootTexUrl,
   getNoQrCodePageButton,
   projectVariant,
+  isProject2,
 } = useProjectVariant()
 
 /** 目前編輯的格索引（0-based），貼圖只作用在這一格 */
@@ -197,10 +198,17 @@ const thumbList = computed(() =>
   }))
 )
 
+/** 專案 2 且縮圖 > 4：左側縮圖區改為可捲動 */
+const thumbWrapperScrollable = computed(
+  () => isProject2.value && thumbList.value.length > THUMB_SCROLL_VISIBLE_COUNT
+)
+
 /** 依版型帶入的根節點 class，方便依 .screen--shoot--bk01 等重寫 CSS */
 const shootRootClass = computed(() => {
   const t = selectedTemplate.value
+  void projectVariant.value
   const base = ['screen', 'screen--shoot']
+  if (projectVariant.value === '2') base.push('screen--shoot--p2')
   const idClass = t ? `screen--shoot--${t.id}` : 'screen--shoot--none'
   const layoutClass = t?.shootLayout?.layoutKey
     ? `screen--shoot--layout-${t.shootLayout!.layoutKey}`
@@ -217,6 +225,9 @@ const shootRootStyle = computed(() => {
   const t = selectedTemplate.value
   const bgUrl = getShootPageBackground(showFilterOptions.value)
   const base: Record<string, string> = {
+    '--shoot-thumb-item-h': `${THUMB_HEIGHT}px`,
+    '--shoot-thumb-gap': `${THUMB_GAP_PX}px`,
+    '--shoot-thumb-scroll-max': `calc(${THUMB_SCROLL_VISIBLE_COUNT} * ${THUMB_HEIGHT}px + ${THUMB_SCROLL_VISIBLE_COUNT - 1} * ${THUMB_GAP_PX}px)`,
     backgroundImage: `url('${bgUrl}')`,
     backgroundRepeat: 'no-repeat',
     backgroundPosition: 'center center',
@@ -253,6 +264,9 @@ const pictureAreaStyle = computed(() => ({
 
 /** 左側縮圖容器：與右側大圖同比例（讀取框圖大小），避免左邊裁切跑掉 */
 const THUMB_HEIGHT = 203
+const THUMB_GAP_PX = 24
+/** 專案 2：縮圖超過此數量時，左欄最高只顯示 4 格並可縱向滑動 */
+const THUMB_SCROLL_VISIBLE_COUNT = 4
 const thumbWrapStyle = computed(() => {
   const w = tp.pictureAreaWidth
   const h = tp.pictureAreaHeight
@@ -1316,7 +1330,10 @@ watch(
           <FilterOptions />
         </div>
         <div v-show="!showFilterOptions" class="thumb-column">
-          <div class="thumb-wrapper">
+          <div
+            class="thumb-wrapper"
+            :class="{ 'thumb-wrapper--scroll': thumbWrapperScrollable }"
+          >
             <div
               v-for="item in thumbList"
               :key="item.id"
@@ -1753,7 +1770,7 @@ watch(
     flex-direction: column;
     // justify-content: center;
     align-items: center;
-    gap: 24px;
+    gap: var(--shoot-thumb-gap, 24px);
     // position: absolute;
     // top: 135px;
     // left: 299px;
@@ -1762,6 +1779,40 @@ watch(
     // display: flex;
     // flex-direction: column;
     // gap: $spacing-md;
+  }
+
+  /* 專案 2：超過 4 張縮圖時，左欄最高顯示 4 格並可縱向滑動 */
+  &.screen--shoot--p2 {
+    .thumb-column {
+      min-height: 0;
+      max-height: calc(100vh - 80px);
+      overflow: hidden;
+    }
+
+    .thumb-wrapper--scroll {
+      flex: 0 1 auto;
+      min-height: 0;
+      width: 100%;
+      max-height: var(--shoot-thumb-scroll-max, 884px);
+      overflow-x: hidden;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+      /* body 為 touch-action:none，此處允許縱向捲動縮圖列 */
+      touch-action: pan-y;
+      scrollbar-gutter: stable;
+
+      &::-webkit-scrollbar {
+        width: 6px;
+      }
+      &::-webkit-scrollbar-thumb {
+        background: rgba(0, 0, 0, 0.35);
+        border-radius: 3px;
+      }
+      &::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.15);
+      }
+    }
   }
 
   .thumb-frame {

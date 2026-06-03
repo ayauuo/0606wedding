@@ -192,47 +192,117 @@ function buildTemplatesProject1(): Template[] {
   ]
 }
 
-/** 2 號專案：維持 bk01、bk02（各拍 2 張） */
+/** 2 號專案：bk01～bk04 共用 9 格 */
+const SLOTS_V2_BK01_04: TemplateSlot[] = [
+  { x: 26, y: 35, w: 383, h: 512 },
+  { x: 26, y: 574, w: 383, h: 512 },
+  { x: 26, y: 1057, w: 383, h: 512 },
+  { x: 409, y: 35, w: 383, h: 512 },
+  { x: 409, y: 547, w: 383, h: 512 },
+  { x: 409, y: 1057, w: 383, h: 512 },
+  { x: 791, y: 35, w: 383, h: 512 },
+  { x: 791, y: 547, w: 383, h: 512 },
+  { x: 791, y: 1057, w: 383, h: 512 },
+]
+
+/** 2 號專案：bk05～bk08 共用 8 格 */
+const SLOTS_V2_BK05_08: TemplateSlot[] = [
+  { x: 85, y: 162, w: 460, h: 330 },
+  { x: 85, y: 528, w: 460, h: 330 },
+  { x: 85, y: 892, w: 460, h: 330 },
+  { x: 85, y: 1259, w: 460, h: 330 },
+  { x: 669, y: 162, w: 460, h: 330 },
+  { x: 669, y: 528, w: 460, h: 330 },
+  { x: 669, y: 892, w: 460, h: 330 },
+  { x: 669, y: 1259, w: 460, h: 330 },
+]
+
+/** 2 號專案 bk09：8 連拍、32 格（少於格數時循環補滿） */
+const SLOTS_V2_BK09: TemplateSlot[] = [
+  { x: 91, y: 106, w: 220, h: 150 },
+  { x: 91, y: 260, w: 220, h: 150 },
+  { x: 91, y: 414, w: 220, h: 150 },
+  { x: 91, y: 568, w: 220, h: 150 },
+  { x: 91, y: 762, w: 220, h: 150 },
+  { x: 91, y: 916, w: 220, h: 150 },
+  { x: 91, y: 1070, w: 220, h: 150 },
+  { x: 91, y: 1224, w: 220, h: 150 },
+  { x: 361, y: 106, w: 220, h: 150 },
+  { x: 361, y: 260, w: 220, h: 150 },
+  { x: 361, y: 414, w: 220, h: 150 },
+  { x: 361, y: 568, w: 220, h: 150 },
+  { x: 361, y: 762, w: 220, h: 150 },
+  { x: 361, y: 916, w: 220, h: 150 },
+  { x: 361, y: 1070, w: 220, h: 150 },
+  { x: 361, y: 1224, w: 220, h: 150 },
+  { x: 625, y: 125, w: 220, h: 150 },
+  { x: 625, y: 260, w: 220, h: 150 },
+  { x: 625, y: 414, w: 220, h: 150 },
+  { x: 625, y: 568, w: 220, h: 150 },
+  { x: 625, y: 762, w: 220, h: 150 },
+  { x: 625, y: 916, w: 220, h: 150 },
+  { x: 625, y: 1070, w: 220, h: 150 },
+  { x: 625, y: 1224, w: 220, h: 150 },
+  { x: 891, y: 106, w: 220, h: 150 },
+  { x: 891, y: 260, w: 220, h: 150 },
+  { x: 891, y: 414, w: 220, h: 150 },
+  { x: 891, y: 568, w: 220, h: 150 },
+  { x: 891, y: 762, w: 220, h: 150 },
+  { x: 891, y: 916, w: 220, h: 150 },
+  { x: 891, y: 1070, w: 220, h: 150 },
+  { x: 891, y: 1224, w: 220, h: 150 },
+]
+
+const SLOTS_V2_BK10: TemplateSlot[] = [
+  { x: 79, y: 399, w: 270, h: 270 },
+  { x: 79, y: 688, w: 270, h: 270 },
+  { x: 79, y: 990, w: 270, h: 270 },
+  { x: 468, y: 399, w: 270, h: 270 },
+  { x: 468, y: 688, w: 270, h: 270 },
+  { x: 468, y: 990, w: 270, h: 270 },
+  { x: 857, y: 399, w: 270, h: 270 },
+  { x: 857, y: 668, w: 460, h: 330 },
+  { x: 857, y: 990, w: 460, h: 330 },
+]
+
+function p2Template(
+  id: string,
+  shotCount: number,
+  sizeKey: string,
+  captureW: number,
+  captureH: number,
+  slots: TemplateSlot[],
+  previewScale: number
+): Template {
+  return {
+    id,
+    preview: getChooseLayoutPreview(id),
+    shotCount,
+    sizeKey,
+    captureW,
+    captureH,
+    stageSize: STAGE_V2,
+    frameAspectRatio: `${captureW}/${captureH}`,
+    width: 1205,
+    height: 1795,
+    slots,
+    shootLayout: { layoutKey: id, captureW, captureH, previewScale },
+  }
+}
+
+/** 2 號專案：bk01～bk10 */
 function buildTemplatesProject2(): Template[] {
   return [
-    {
-      id: 'bk01',
-      preview: getChooseLayoutPreview('bk01'),
-      shotCount: 2,
-      sizeKey: '4x6_2IN',
-      captureW: 500,
-      captureH: 500,
-      stageSize: STAGE_V2,
-      frameAspectRatio: '500/500',
-      width: 1205,
-      height: 1795,
-      slots: [
-        { x: 69, y: 352, w: 500, h: 500 },
-        { x: 69, y: 825, w: 500, h: 500 },
-        { x: 649, y: 684, w: 500, h: 500 },
-        { x: 649, y: 1181, w: 500, h: 500 },
-      ],
-      shootLayout: { layoutKey: 'bk01', captureW: 500, captureH: 500, displayW: 500, displayH: 500, previewScale: 1.42 },
-    },
-    {
-      id: 'bk02',
-      preview: getChooseLayoutPreview('bk02'),
-      shotCount: 2,
-      sizeKey: '4x6_2IN',
-      captureW: 500,
-      captureH: 500,
-      stageSize: STAGE_V2,
-      frameAspectRatio: '500/500',
-      width: 1205,
-      height: 1795,
-      slots: [
-        { x: 63, y: 352, w: 500, h: 500 },
-        { x: 63, y: 848, w: 500, h: 500 },
-        { x: 648, y: 700, w: 500, h: 500 },
-        { x: 648, y: 1188, w: 500, h: 500 },
-      ],
-      shootLayout: { layoutKey: 'bk02', captureW: 500, captureH: 500, previewScale: 1.42 },
-    },
+    p2Template('bk01', 9, '4x6', 383, 512, SLOTS_V2_BK01_04, 1.35),
+    p2Template('bk02', 9, '4x6', 383, 512, SLOTS_V2_BK01_04, 1.35),
+    p2Template('bk03', 9, '4x6', 383, 512, SLOTS_V2_BK01_04, 1.35),
+    p2Template('bk04', 9, '4x6', 383, 512, SLOTS_V2_BK01_04, 1.35),
+    p2Template('bk05', 8, '4x6_2IN', 460, 330, SLOTS_V2_BK05_08, 1.8),
+    p2Template('bk06', 8, '4x6_2IN', 460, 330, SLOTS_V2_BK05_08, 1.8),
+    p2Template('bk07', 8, '4x6_2IN', 460, 330, SLOTS_V2_BK05_08, 1.8),
+    p2Template('bk08', 8, '4x6_2IN', 460, 330, SLOTS_V2_BK05_08, 1.8),
+    p2Template('bk09', 8, '4x6', 220, 150, SLOTS_V2_BK09, 2.5),
+    p2Template('bk10', 9, '4x6', 270, 270, SLOTS_V2_BK10, 1.8),
   ]
 }
 

@@ -3,7 +3,7 @@
 interface ImportMetaEnv {
   /** 開發時起始頁面：0=待機 1=選版型 2=拍照 3=結果 4=列印中，空則不跳轉 */
   readonly VITE_DEV_START_PAGE?: string
-  /** 預設版型索引：0=bk01 … 5=bk06（專案 1）；專案 2 僅 bk01、bk02 */
+  /** 預設版型索引：0=bk01 … 5=bk06（專案 1）；專案 2 為 0=bk01 … 9=bk10 */
   readonly VITE_DEFAULT_TEMPLATE_INDEX?: string
   /** 拍照預覽畫面是否使用預設測試圖：1/true 時用 test0.jpg～test3.jpg 合成預覽 */
   readonly VITE_PREVIEW_USE_TEST_IMAGES?: string
@@ -26,6 +26,10 @@ interface ImportMetaEnv {
   readonly VITE_BK04_SYNTHESIS?: string
   readonly VITE_BK05_SYNTHESIS?: string
   readonly VITE_BK06_SYNTHESIS?: string
+  readonly VITE_BK07_SYNTHESIS?: string
+  readonly VITE_BK08_SYNTHESIS?: string
+  readonly VITE_BK09_SYNTHESIS?: string
+  readonly VITE_BK10_SYNTHESIS?: string
   /** 測試模式快速倒數：1/true 時拍照改為 2 秒倒數 */
   readonly VITE_TEST_FAST_COUNTDOWN?: string
   /** 立刻拍：1/true 時跳過倒數，啟動後強制立即拍攝 */
