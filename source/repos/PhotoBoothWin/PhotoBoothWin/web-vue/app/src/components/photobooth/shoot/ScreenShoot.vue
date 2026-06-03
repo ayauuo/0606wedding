@@ -17,10 +17,9 @@ const {
   captureResults,
   captureResultsTemplateId,
   selectedFilter,
-  getFilterCssForCanvas,
-  getColorBalanceForFilter,
-  applyColorBalance,
   buildFinalOutput,
+  renderComposite,
+  resetSession,
   callHost,
   setTestSession,
   // 貼圖相關狀態（依格分開）
@@ -34,6 +33,7 @@ const {
   getShootPageBackground,
   getShootPageAsset,
   getShootTexUrl,
+  getNoQrCodePageButton,
   projectVariant,
 } = useProjectVariant()
 
@@ -223,6 +223,8 @@ const shootRootStyle = computed(() => {
     backgroundSize: 'cover',
     '--shoot-btn-reshoot': `url('${getShootPageAsset('reshoot.png')}')`,
     '--shoot-btn-next': `url('${getShootPageAsset('nextbutton.png')}')`,
+    '--shoot-btn-cancel': `url('${getNoQrCodePageButton('cancelbutton.png')}')`,
+    '--shoot-btn-print': `url('${getNoQrCodePageButton('printbutton.png')}')`,
   }
   if (!t) return base
   const layout = t.shootLayout ?? {}
@@ -502,66 +504,90 @@ function onStickerRemove(id: string) {
   removeSticker(currentSlotIndex.value, id)
 }
 
-/** 濾鏡模式時：把 mainPreviewUrl 畫到 canvas 並套用 selectedFilter（僅中間大圖） */
-function drawFilterPreview() {
+/** 濾鏡模式：繪製完整合成預覽（僅照片格套濾鏡，外框不變色） */
+let compositePreviewGen = 0
+async function drawCompositePreview() {
   const canvas = filterPreviewCanvasRef.value
-  const url = mainPreviewUrl.value
-  if (!canvas || !url || !showFilterOptions.value) return
+  const tpl = selectedTemplate.value
+  if (!canvas || !tpl || !showFilterOptions.value) return
   const parent = canvas.parentElement
   if (!parent) return
-  const w = parent.clientWidth
-  const h = parent.clientHeight
-  if (w <= 0 || h <= 0) return
-  const img = new Image()
-  img.crossOrigin = 'anonymous'
-  img.onload = () => {
-    if (!showFilterOptions.value) return
+  const displayW = parent.clientWidth
+  const displayH = parent.clientHeight
+  if (displayW <= 0 || displayH <= 0) return
+
+  const urls =
+    captureResults.value.length > 0
+      ? [...captureResults.value]
+      : thumbUrls.value.filter((u) => u)
+  if (!urls.length) return
+
+  const gen = ++compositePreviewGen
+  try {
+    const off = document.createElement('canvas')
+    off.width = tpl.width
+    off.height = tpl.height
+    const offCtx = off.getContext('2d')
+    if (!offCtx) return
+
+    await renderComposite(offCtx, tpl, {
+      captureUrls: urls,
+      filterId: selectedFilter.value,
+      stickers: stickersBySlot.value,
+      includeFrame: true,
+      includeStickers: true,
+    })
+
+    if (gen !== compositePreviewGen || !showFilterOptions.value) return
+
     const dpr = window.devicePixelRatio || 1
-    const cw = Math.round(w * dpr)
-    const ch = Math.round(h * dpr)
+    const scale = Math.min(displayW / tpl.width, displayH / tpl.height)
+    const drawW = tpl.width * scale
+    const drawH = tpl.height * scale
+    const dx = (displayW - drawW) / 2
+    const dy = (displayH - drawH) / 2
+
+    const cw = Math.round(displayW * dpr)
+    const ch = Math.round(displayH * dpr)
     canvas.width = cw
     canvas.height = ch
-    canvas.style.width = `${w}px`
-    canvas.style.height = `${h}px`
+    canvas.style.width = `${displayW}px`
+    canvas.style.height = `${displayH}px`
+
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     ctx.save()
     ctx.scale(dpr, dpr)
-    const scale = Math.max(w / img.naturalWidth, h / img.naturalHeight)
-    const drawW = img.naturalWidth * scale
-    const drawH = img.naturalHeight * scale
-    const dx = (w - drawW) / 2
-    const dy = (h - drawH) / 2
-    ctx.filter = getFilterCssForCanvas(selectedFilter.value)
-    ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, dx, dy, drawW, drawH)
-    const balance = getColorBalanceForFilter(selectedFilter.value)
-    if (balance) {
-      const sx = Math.round(dx * dpr)
-      const sy = Math.round(dy * dpr)
-      const sw = Math.max(1, Math.round(drawW * dpr))
-      const sh = Math.max(1, Math.round(drawH * dpr))
-      requestAnimationFrame(() => {
-        if (!showFilterOptions.value) return
-        const imageData = ctx.getImageData(sx, sy, sw, sh)
-        applyColorBalance(imageData, balance.deltaR, balance.deltaG, balance.deltaB)
-        ctx.putImageData(imageData, sx, sy)
-      })
-    }
+    ctx.fillStyle = '#fff'
+    ctx.fillRect(0, 0, displayW, displayH)
+    ctx.drawImage(off, 0, 0, tpl.width, tpl.height, dx, dy, drawW, drawH)
     ctx.restore()
+    off.width = 1
+    off.height = 1
+  } catch {
+    // 預覽失敗時略過
   }
-  img.onerror = () => {}
-  img.src = url
+}
+
+function scheduleCompositePreview() {
+  if (!showFilterOptions.value) return
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      void drawCompositePreview()
+    })
+  })
 }
 
 watch(
-  () => [showFilterOptions.value, mainPreviewUrl.value, selectedFilter.value],
-  () => {
-    if (showFilterOptions.value && mainPreviewUrl.value) {
-      nextTick(() => {
-        requestAnimationFrame(() => drawFilterPreview())
-      })
-    }
-  },
+  () => [
+    showFilterOptions.value,
+    selectedFilter.value,
+    selectedTemplate.value?.id,
+    captureResults.value.join('|'),
+    thumbUrls.value.join('|'),
+    JSON.stringify(stickersBySlot.value),
+  ],
+  () => scheduleCompositePreview(),
   { immediate: true }
 )
 
@@ -886,7 +912,15 @@ async function onFilterConfirm() {
   stopFilterCountdown()
   await stopLiveViewWithClear('filter_confirm').catch(() => {})
   await new Promise((r) => setTimeout(r, 100))
-  buildFinalOutput()
+  showScreen('processing')
+  await buildFinalOutput({ alreadyOnProcessing: true })
+}
+
+function onFilterCancel() {
+  stopFilterCountdown()
+  showFilterOptions.value = false
+  resetSession()
+  showScreen('idle')
 }
 
 /** 下一步按鈕點擊：記錄目前狀態與分支後再呼叫 onNext / onFilterConfirm */
@@ -1281,7 +1315,7 @@ watch(
         <div v-show="showFilterOptions" class="filter-list-wrap">
           <FilterOptions />
         </div>
-        <div class="thumb-column">
+        <div v-show="!showFilterOptions" class="thumb-column">
           <div class="thumb-wrapper">
             <div
               v-for="item in thumbList"
@@ -1360,7 +1394,12 @@ watch(
               重試
             </button>
           </div>
-          <div class="cover" :style="coverStyle" aria-hidden="true" />
+          <div
+            v-show="!showFilterOptions"
+            class="cover"
+            :style="coverStyle"
+            aria-hidden="true"
+          />
           <!-- 預覽與拍照皆由 C# 推送：EDSDK Live View 即時預覽、拍完顯示選中照片；重拍時也要顯示 Live View -->
           <img
             v-show="hostLiveViewDataUrl && (!tp.shootingDone || isReshooting)"
@@ -1456,17 +1495,37 @@ watch(
             class="btns shoot-btns"
             :class="{ 'is-dormant': !tp.shootingDone || isReshooting }"
           >
-            <div class="shoot-again-wrap">
-              <button
-                type="button"
-                class="again-btn shoot-btn"
-                :class="{ 'is-hidden': tp.reshootUsedSlots.has(tp.currentMainIndex) || showFilterOptions }"
-                @click="onAgain"
-              />
-            </div>
-            <div class="shoot-next-wrap">
-              <button type="button" class="next-btn shoot-btn" @click="handleNextClick" />
-            </div>
+            <template v-if="showFilterOptions">
+              <div class="shoot-cancel-wrap">
+                <button
+                  type="button"
+                  class="cancel-btn shoot-btn"
+                  aria-label="取消"
+                  @click="onFilterCancel"
+                />
+              </div>
+              <div class="shoot-print-wrap">
+                <button
+                  type="button"
+                  class="print-btn shoot-btn"
+                  aria-label="列印"
+                  @click="onFilterConfirm"
+                />
+              </div>
+            </template>
+            <template v-else>
+              <div class="shoot-again-wrap">
+                <button
+                  type="button"
+                  class="again-btn shoot-btn"
+                  :class="{ 'is-hidden': tp.reshootUsedSlots.has(tp.currentMainIndex) }"
+                  @click="onAgain"
+                />
+              </div>
+              <div class="shoot-next-wrap">
+                <button type="button" class="next-btn shoot-btn" @click="handleNextClick" />
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -1539,7 +1598,9 @@ watch(
 
   /* 重拍／下一步外層：同尺寸（nextbutton.png、reshoot.png 皆約 381×166 級距） */
   .shoot-again-wrap,
-  .shoot-next-wrap {
+  .shoot-next-wrap,
+  .shoot-cancel-wrap,
+  .shoot-print-wrap {
     position: relative;
     flex: 1 1 0;
     max-width: 250px;
@@ -2129,7 +2190,9 @@ watch(
     box-sizing: border-box;
 
     .again-btn,
-    .next-btn {
+    .next-btn,
+    .cancel-btn,
+    .print-btn {
       display: block;
       width: 100%;
       height: 100%;
@@ -2155,6 +2218,14 @@ watch(
 
     .next-btn {
       background-image: var(--shoot-btn-next);
+    }
+
+    .cancel-btn {
+      background-image: var(--shoot-btn-cancel);
+    }
+
+    .print-btn {
+      background-image: var(--shoot-btn-print);
     }
   }
 }

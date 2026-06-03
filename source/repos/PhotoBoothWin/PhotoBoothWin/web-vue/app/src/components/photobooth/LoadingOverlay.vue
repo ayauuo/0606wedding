@@ -3,7 +3,12 @@ import { computed } from 'vue'
 import { usePhotobooth } from '@/composables/usePhotobooth'
 
 const { loading, currentScreen } = usePhotobooth()
-const show = computed(() => loading.value && currentScreen.value !== 'uploading')
+const show = computed(
+  () =>
+    loading.value &&
+    currentScreen.value !== 'uploading' &&
+    currentScreen.value !== 'processing'
+)
 </script>
 
 <template>

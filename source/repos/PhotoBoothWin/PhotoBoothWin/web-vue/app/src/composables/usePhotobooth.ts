@@ -1,4 +1,4 @@
-import { ref, computed, shallowRef, nextTick } from 'vue'
+import { ref, computed, shallowRef } from 'vue'
 import QRCode from 'qrcode'
 import type { Template, ScreenName, FilterId, TemplateSlot } from '@/types/photobooth'
 import { callHost } from './useHost'
@@ -19,6 +19,50 @@ type StickerInstance = {
 }
 
 const { projectVariant, getChooseLayoutPreview, getQrCodePageFrame } = useProjectVariant()
+
+/** 合成／預覽共用：圖片載入快取 */
+const imageLoadCache = new Map<string, Promise<HTMLImageElement>>()
+
+function loadCachedImage(src: string): Promise<HTMLImageElement> {
+  let pending = imageLoadCache.get(src)
+  if (!pending) {
+    pending = new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image()
+      img.onload = () => resolve(img)
+      img.onerror = reject
+      img.src = src
+    })
+    imageLoadCache.set(src, pending)
+  }
+  return pending
+}
+
+function isStickerEnabledEnv(): boolean {
+  return (
+    import.meta.env.VITE_STICKER_ENABLED === '1' ||
+    String(import.meta.env.VITE_STICKER_ENABLED ?? '').toLowerCase() === 'true'
+  )
+}
+
+export type RenderCompositeOptions = {
+  captureUrls: string[]
+  filterId: FilterId | null
+  stickers: Record<number, StickerInstance[]>
+  includeFrame?: boolean
+  includeStickers?: boolean
+}
+
+/** 少於 slots 時循環補滿 capture URLs */
+export function expandCaptureUrlsForSlots(captureUrls: string[], slotCount: number): string[] {
+  const captureCycleLen = captureUrls.length
+  if (captureCycleLen <= 0 || slotCount <= 0) return captureUrls
+  if (captureCycleLen >= slotCount) return captureUrls.slice(0, slotCount)
+  const expanded: string[] = []
+  for (let i = 0; i < slotCount; i++) {
+    expanded.push(captureUrls[i % captureCycleLen]!)
+  }
+  return expanded
+}
 
 const STAGE_V1 = { maxWidth: '1000px', maxHeight: 'calc(100vh - 200px)' } as const
 const STAGE_V2 = { maxWidth: '500px', maxHeight: 'calc(100vh - 200px)' } as const
@@ -504,142 +548,73 @@ export function usePhotobooth() {
     }
   }
 
-  async function buildFinalOutput() {
-    const tpl = selectedTemplate.value
-    if (!tpl) return
-    if (!captureResults.value.length) {
-      try {
-        const res = await callHost('load_captures', {}) as { urls?: string[] }
-        if (Array.isArray(res.urls) && res.urls.length > 0) {
-          captureResults.value = res.urls
-          captureResultsTemplateId.value = tpl.id
-        }
-      } catch {
-        // ignore
+  /** 在 ctx 上繪製完整合成（照片格＋濾鏡、外框、貼圖）；與 buildFinalOutput 共用 */
+  async function renderComposite(
+    ctx: CanvasRenderingContext2D,
+    tpl: Template,
+    options: RenderCompositeOptions
+  ): Promise<void> {
+    const {
+      captureUrls: rawUrls,
+      filterId,
+      stickers,
+      includeFrame = true,
+      includeStickers = true,
+    } = options
+    const synthesisSlots = getSynthesisSlots(tpl)
+    const captureUrls = expandCaptureUrlsForSlots(rawUrls, synthesisSlots.length)
+    const captureCycleLen = rawUrls.length
+    const filterCss = getFilterCssForCanvas(filterId)
+
+    for (let i = 0; i < Math.min(captureUrls.length, synthesisSlots.length); i++) {
+      const url = captureUrls[i]
+      const slot = synthesisSlots[i]
+      if (url === undefined || url === '' || slot === undefined) continue
+      const img = await loadCachedImage(url)
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(slot.x, slot.y, slot.w, slot.h)
+      ctx.clip()
+      ctx.filter = filterCss
+      const scale = Math.max(slot.w / img.naturalWidth, slot.h / img.naturalHeight)
+      const drawW = img.naturalWidth * scale
+      const drawH = img.naturalHeight * scale
+      const dx = slot.x + (slot.w - drawW) / 2
+      const dy = slot.y + (slot.h - drawH) / 2
+      ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, dx, dy, drawW, drawH)
+      const balance = getColorBalanceForFilter(filterId)
+      if (balance) {
+        const sx = Math.round(slot.x)
+        const sy = Math.round(slot.y)
+        const sw = Math.max(1, Math.round(slot.w))
+        const sh = Math.max(1, Math.round(slot.h))
+        const imageData = ctx.getImageData(sx, sy, sw, sh)
+        applyColorBalance(imageData, balance.deltaR, balance.deltaG, balance.deltaB)
+        ctx.putImageData(imageData, sx, sy)
       }
+      ctx.restore()
     }
-    if (!captureResults.value.length) return
-    showScreen('uploading')
-    await nextTick()
-    try {
-      const canvas = document.createElement('canvas')
-      canvas.width = tpl.width
-      canvas.height = tpl.height
-      const ctx = canvas.getContext('2d')
-      if (!ctx) return
-      const loadImg = (src: string) =>
-        new Promise<HTMLImageElement>((resolve, reject) => {
-          const img = new Image()
-          img.onload = () => resolve(img)
-          img.onerror = reject
-          img.src = src
-        })
-      // 底層：每一格畫照片（合成座標來自 env 或 template.slots）
-      const synthesisSlots = getSynthesisSlots(tpl)
-      let captureUrls = [...captureResults.value]
-      /** 實際拍到的張數；少於 slots 時會循環補滿（例：2 張→4 格 = 0,1,0,1） */
-      const captureCycleLen = captureUrls.length
-      const slotCount = synthesisSlots.length
-      if (captureCycleLen > 0 && slotCount > 0 && captureCycleLen < slotCount) {
-        const expanded: string[] = []
-        for (let i = 0; i < slotCount; i++) {
-          expanded.push(captureUrls[i % captureCycleLen]!)
-        }
-        captureUrls = expanded
-      }
-      const filterCss = getFilterCssForCanvas(selectedFilter.value)
-      for (let i = 0; i < Math.min(captureUrls.length, synthesisSlots.length); i++) {
-        const url = captureUrls[i]
-        const slot = synthesisSlots[i]
-        if (url === undefined || url === '' || slot === undefined) continue
-        const img = await loadImg(url)
-        ctx.save()
-        // 限制在格內繪製，避免 cover 溢出到中間溝（左右條分界）造成接縫色帶
-        ctx.beginPath()
-        ctx.rect(slot.x, slot.y, slot.w, slot.h)
-        ctx.clip()
-        ctx.filter = filterCss
-        // 填滿框、裁切溢出（object-fit: cover），與預覽一致
-        const scale = Math.max(slot.w / img.naturalWidth, slot.h / img.naturalHeight)
-        const drawW = img.naturalWidth * scale
-        const drawH = img.naturalHeight * scale
-        const dx = slot.x + (slot.w - drawW) / 2
-        const dy = slot.y + (slot.h - drawH) / 2
-        ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, dx, dy, drawW, drawH)
-        const balance = getColorBalanceForFilter(selectedFilter.value)
-        if (balance) {
-          const sx = Math.round(slot.x)
-          const sy = Math.round(slot.y)
-          const sw = Math.max(1, Math.round(slot.w))
-          const sh = Math.max(1, Math.round(slot.h))
-          const imageData = ctx.getImageData(sx, sy, sw, sh)
-          applyColorBalance(imageData, balance.deltaR, balance.deltaG, balance.deltaB)
-          ctx.putImageData(imageData, sx, sy)
-        }
-        ctx.restore()
-        img.src = '' // 釋放解碼後的點陣圖記憶體
-      }
-      // 前景：疊上 QRcodePage 外框
+
+    if (includeFrame) {
       const qrBgUrl = getQrCodePageFrame(tpl.id)
       try {
-        const bgImg = await loadImg(qrBgUrl)
+        const bgImg = await loadCachedImage(qrBgUrl)
         ctx.drawImage(bgImg, 0, 0, tpl.width, tpl.height, 0, 0, tpl.width, tpl.height)
-        bgImg.src = '' // 釋放外框圖記憶體
       } catch {
         // 無外框圖時不覆蓋
       }
+    }
 
-      // 貼圖（固定 Logo）：在外框之上再疊一層 Texture 貼圖（PNG 透明底）
-      // 檔案路徑：/assets/templates/Texture/1.png
-      // try {
-      //   const stickerUrl = '/assets/templates/Texture/1.png'
-      //   const stickerImg = await loadImg(stickerUrl)
-      //   // 依模板尺寸動態縮放，最大佔寬高 40%，避免過大
-      //   const maxStickerW = tpl.width * 0.4
-      //   const maxStickerH = tpl.height * 0.4
-      //   const scale = Math.min(
-      //     maxStickerW / stickerImg.naturalWidth,
-      //     maxStickerH / stickerImg.naturalHeight,
-      //     1
-      //   )
-      //   const stickerW = stickerImg.naturalWidth * scale
-      //   const stickerH = stickerImg.naturalHeight * scale
-      //   // 預設貼在右下角，保留 40px 邊界
-      //   const margin = 40
-      //   const sx = tpl.width - stickerW - margin
-      //   const sy = tpl.height - stickerH - margin
-      //   ctx.drawImage(
-      //     stickerImg,
-      //     0,
-      //     0,
-      //     stickerImg.naturalWidth,
-      //     stickerImg.naturalHeight,
-      //     sx,
-      //     sy,
-      //     stickerW,
-      //     stickerH
-      //   )
-      //   stickerImg.src = '' // 釋放貼圖記憶體
-      // } catch {
-      //   // 無貼圖檔案時略過，不影響主流程
-      // }
-
-      // 使用者貼圖畫在外框「之上」、與預覽相同座標（格內 0～1），所見即所得（依 VITE_STICKER_ENABLED 開關）
-      const isStickerEnabled =
-        import.meta.env.VITE_STICKER_ENABLED === '1' ||
-        String(import.meta.env.VITE_STICKER_ENABLED ?? '').toLowerCase() === 'true'
+    if (includeStickers && isStickerEnabledEnv()) {
       const SLOT_STICKER_WIDTH_RATIO = 0.2
       for (let i = 0; i < synthesisSlots.length; i++) {
         const slot = synthesisSlots[i]
         if (!slot) continue
-        const stickerSlot =
-          captureCycleLen > 0 ? i % captureCycleLen : i
-        const slotStickers = isStickerEnabled
-          ? (stickersBySlot.value[stickerSlot] ?? [])
-          : []
+        const stickerSlot = captureCycleLen > 0 ? i % captureCycleLen : i
+        const slotStickers = stickers[stickerSlot] ?? []
         for (const st of slotStickers) {
           try {
-            const stImg = await loadImg(st.imageUrl)
+            const stImg = await loadCachedImage(st.imageUrl)
             const baseW = slot.w * SLOT_STICKER_WIDTH_RATIO * st.scale
             const aspect =
               stImg.naturalWidth > 0 && stImg.naturalHeight > 0
@@ -662,12 +637,156 @@ export function usePhotobooth() {
               stDrawW,
               stDrawH
             )
-            stImg.src = ''
           } catch {
             // 單張貼圖失敗時略過
           }
         }
       }
+    }
+  }
+
+  function getPrintingShowSec(): number {
+    const raw = import.meta.env.VITE_PRINTING_SHOW_SEC
+    if (raw === undefined || raw === '') return 20
+    const n = parseInt(raw, 10)
+    return Number.isNaN(n) || n < 1 ? 20 : Math.min(120, n)
+  }
+
+  function getSkipPrint(): boolean {
+    const v = import.meta.env.VITE_SKIP_PRINT
+    return v === '1' || String(v).toLowerCase() === 'true'
+  }
+
+  function getReceiptAmount(): string {
+    const v = import.meta.env.VITE_RECEIPT_AMOUNT
+    return typeof v === 'string' && v !== '' ? v : '0'
+  }
+
+  function getLogPrintRecordWhenSkip(): boolean {
+    const v = import.meta.env.VITE_LOG_PRINT_RECORD_WHEN_SKIP
+    return v === '1' || String(v).toLowerCase() === 'true'
+  }
+
+  function getProjectName(): string {
+    const v = import.meta.env.VITE_PROJECT_NAME
+    return typeof v === 'string' ? v : ''
+  }
+
+  function getMachineName(): string {
+    const v = import.meta.env.VITE_MACHINE_NAME
+    return typeof v === 'string' ? v : ''
+  }
+
+  function getIsTestForPrint(): boolean {
+    if (isTestSession.value) return true
+    const v = import.meta.env.VITE_TEST_FAST_COUNTDOWN
+    return v === '1' || String(v).toLowerCase() === 'true'
+  }
+
+  function getFinalFileName(): string {
+    const path = finalFilePath.value
+    if (!path) return ''
+    return path.replace(/^.*[/\\]/, '') || ''
+  }
+
+  /** 送 DNP 列印 → 顯示列印等待 N 秒 → 回待機 */
+  function goToPrintingThenIdle(options?: { alreadyOnProcessing?: boolean; copies?: number }) {
+    const printingSec = getPrintingShowSec()
+    const skipPrint = getSkipPrint()
+    const copies = options?.copies ?? 1
+    if (!options?.alreadyOnProcessing) {
+      showScreen('processing')
+    }
+    if (!finalFilePath.value) {
+      setTimeout(() => {
+        autoPrint.value = false
+        resetSession()
+        showScreen('idle')
+      }, printingSec * 1000)
+      return
+    }
+    if (skipPrint) {
+      if (getLogPrintRecordWhenSkip()) {
+        callHost('log_print_record', {
+          templateName: selectedTemplate.value?.id ?? 'unknown',
+          printTime: new Date().toISOString(),
+          amount: getReceiptAmount(),
+          projectName: getProjectName(),
+          machineName: getMachineName(),
+          copies: 1,
+          fileName: getFinalFileName(),
+          isTest: getIsTestForPrint(),
+        }).finally(() => {
+          setTimeout(() => {
+            autoPrint.value = false
+            resetSession()
+            showScreen('idle')
+          }, printingSec * 1000)
+        })
+      } else {
+        setTimeout(() => {
+          autoPrint.value = false
+          resetSession()
+          showScreen('idle')
+        }, printingSec * 1000)
+      }
+      return
+    }
+    callHost('print_hotfolder', {
+      filePath: finalFilePath.value,
+      sizeKey: selectedTemplate.value?.sizeKey ?? '4x6',
+      copies,
+    })
+      .then(() =>
+        callHost('log_print_record', {
+          templateName: selectedTemplate.value?.id ?? 'unknown',
+          printTime: new Date().toISOString(),
+          amount: getReceiptAmount(),
+          projectName: getProjectName(),
+          machineName: getMachineName(),
+          copies,
+          fileName: getFinalFileName(),
+          isTest: getIsTestForPrint(),
+        })
+      )
+      .finally(() => {
+        setTimeout(() => {
+          autoPrint.value = false
+          resetSession()
+          showScreen('idle')
+        }, printingSec * 1000)
+      })
+  }
+
+  async function buildFinalOutput(options?: { alreadyOnProcessing?: boolean }) {
+    const tpl = selectedTemplate.value
+    if (!tpl) return
+    if (!captureResults.value.length) {
+      try {
+        const res = await callHost('load_captures', {}) as { urls?: string[] }
+        if (Array.isArray(res.urls) && res.urls.length > 0) {
+          captureResults.value = res.urls
+          captureResultsTemplateId.value = tpl.id
+        }
+      } catch {
+        // ignore
+      }
+    }
+    if (!captureResults.value.length) return
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = tpl.width
+      canvas.height = tpl.height
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+
+      await renderComposite(ctx, tpl, {
+        captureUrls: [...captureResults.value],
+        filterId: selectedFilter.value,
+        stickers: stickersBySlot.value,
+        includeFrame: true,
+        includeStickers: true,
+      })
 
       const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
       canvas.width = 1
@@ -677,7 +796,6 @@ export function usePhotobooth() {
       finalFilePath.value = filePath
       finalPreviewUrl.value = dataUrl
 
-      // 結果圖就緒（列印改由結果頁按鈕或 60 秒自動觸發）
       callHost('result_image_ready', {
         filePath,
         imageData: dataUrl,
@@ -685,11 +803,12 @@ export function usePhotobooth() {
       }).catch(() => {})
 
       if (showQrCode.value) {
-        const basePage = typeof import.meta.env.VITE_DOWNLOAD_PAGE_BASE_URL === 'string' && import.meta.env.VITE_DOWNLOAD_PAGE_BASE_URL
-          ? import.meta.env.VITE_DOWNLOAD_PAGE_BASE_URL.replace(/\/$/, '')
-          : ''
+        const basePage =
+          typeof import.meta.env.VITE_DOWNLOAD_PAGE_BASE_URL === 'string' &&
+          import.meta.env.VITE_DOWNLOAD_PAGE_BASE_URL
+            ? import.meta.env.VITE_DOWNLOAD_PAGE_BASE_URL.replace(/\/$/, '')
+            : ''
 
-        // 上傳完成後再進結果頁：取得圖片／影片 URL，組出帶參數的下載頁網址給 QR code
         let imageUrl = ''
         try {
           const uploadRes = await callHost('upload_file', { filePath }) as { url?: string }
@@ -706,7 +825,9 @@ export function usePhotobooth() {
             reader.readAsDataURL(captureVideoBlob.value!)
           })
           try {
-            const videoRes = await callHost('upload_video', { videoData: videoDataUrl }) as { url?: string }
+            const videoRes = await callHost('upload_video', { videoData: videoDataUrl }) as {
+              url?: string
+            }
             videoUrl = videoRes?.url ?? ''
             finalVideoUrl.value = videoUrl
           } catch (e) {
@@ -714,34 +835,49 @@ export function usePhotobooth() {
           }
         }
 
-        // 下載頁需 ?img=... 與選填 &video=...，掃 QR 才能顯示相片／影片
         const qrUrl = basePage
           ? `${basePage}?img=${encodeURIComponent(imageUrl)}${videoUrl ? `&video=${encodeURIComponent(videoUrl)}` : ''}`
-          : (imageUrl || 'https://example.com/download')
+          : imageUrl || 'https://example.com/download'
         qrText.value = qrUrl
         QRCode.toDataURL(qrUrl, { width: 600, margin: 2 })
-          .then((url) => { qrImageUrl.value = url })
-          .catch(() => { qrImageUrl.value = '' })
+          .then((url) => {
+            qrImageUrl.value = url
+          })
+          .catch(() => {
+            qrImageUrl.value = ''
+          })
+        showScreen('result')
+      } else {
+        goToPrintingThenIdle({ alreadyOnProcessing: options?.alreadyOnProcessing })
       }
 
-      showScreen(showQrCode.value ? 'result' : 'result-no-qr')
-
       const isTestMode = (v: string | undefined) => v === '1' || String(v).toLowerCase() === 'true'
-      if (!isTestMode(import.meta.env.VITE_TEST_FAST_COUNTDOWN) && isTestMode(import.meta.env.VITE_LOG_USAGE)) {
+      if (
+        !isTestMode(import.meta.env.VITE_TEST_FAST_COUNTDOWN) &&
+        isTestMode(import.meta.env.VITE_LOG_USAGE)
+      ) {
         try {
           await callHost('append_usage_log', {
             folder: 'daily report',
             time: new Date().toISOString(),
             templateId: tpl.id,
             projectName: import.meta.env.VITE_PROJECT_NAME ?? '',
-            isTest: isTestSession.value, // 標記是否為測試資料
+            isTest: isTestSession.value,
           })
         } catch {
           // ignore
         }
       }
-    } finally {
-      // 不再使用 setLoading，由「照片上傳中」頁面取代轉圈圈
+    } catch (e) {
+      console.error('[拍貼機] 合成失敗', e)
+      if (!showQrCode.value) {
+        const printingSec = getPrintingShowSec()
+        setTimeout(() => {
+          autoPrint.value = false
+          resetSession()
+          showScreen('idle')
+        }, printingSec * 1000)
+      }
     }
   }
 
@@ -790,6 +926,8 @@ export function usePhotobooth() {
     setCaptureVideoBlob,
     resetSession,
     buildFinalOutput,
+    renderComposite,
+    goToPrintingThenIdle,
     runDevStartPage,
     setResultMock,
     callHost,

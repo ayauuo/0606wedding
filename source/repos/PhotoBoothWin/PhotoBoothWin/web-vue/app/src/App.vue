@@ -159,8 +159,8 @@ onMounted(() => {
           const templateId = msg.templateId
           const tpl = templates.value.find((t: { id: string }) => t.id === templateId) ?? templates.value[0]
           if (tpl) selectTemplate(tpl)
-          showScreen('uploading')
-          buildFinalOutput()
+          showScreen('processing')
+          buildFinalOutput({ alreadyOnProcessing: true })
           return
         }
         if (eventType === 'liveview_frame' && typeof msg.dataUrl === 'string') {
