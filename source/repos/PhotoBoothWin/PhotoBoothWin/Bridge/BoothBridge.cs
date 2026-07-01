@@ -282,8 +282,13 @@ namespace PhotoBoothWin.Bridge
                                 for (var i = 0; i < byIndex.Count; i++)
                                 {
                                     var path = byIndex[i];
-                                    var thumbPath = string.IsNullOrWhiteSpace(path) ? "" : CreateThumbnailFile(path, 800) ?? "";
-                                    result[i] = string.IsNullOrEmpty(thumbPath) ? "" : $"https://photos/{Path.GetFileName(thumbPath)}";
+                                    if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                                    {
+                                        result[i] = "";
+                                        continue;
+                                    }
+                                    // 合成／濾鏡預覽用相機原圖（非 _thumb.jpg）
+                                    result[i] = $"https://photos/{Path.GetFileName(path)}";
                                 }
                                 // #region agent log
                                 System.Diagnostics.Debug.WriteLine($"[Bridge] 讀圖完成，共 {result.Length} 張");
@@ -494,7 +499,10 @@ namespace PhotoBoothWin.Bridge
                                 }
 
                                 if (!string.IsNullOrWhiteSpace(path))
+                                {
                                     CameraCaptureStore.SetCapture(index, path);
+                                    MirrorPhotoHorizontally(path);
+                                }
                                 System.Diagnostics.Debug.WriteLine($"[Shoot] index={index} 拍照完成，路徑：{path ?? "(空)"}");
 
                                 var fileName = !string.IsNullOrWhiteSpace(path) ? Path.GetFileName(path) : "";
@@ -926,6 +934,33 @@ namespace PhotoBoothWin.Bridge
             return CreateThumbnailDataUrl(filePath, 1920);
         }
 
+        /// <summary>相機原圖為非鏡像；Live View 在前端以 scaleX(-1) 顯示，存檔時水平翻轉以與預覽一致。</summary>
+        private static void MirrorPhotoHorizontally(string filePath)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath)) return;
+                using var img = Image.FromFile(filePath);
+                img.RotateFlip(RotateFlipType.RotateNoneFlipX);
+                var tempPath = filePath + ".mirror.tmp";
+                var jpegEncoder = GetJpegEncoder();
+                if (jpegEncoder != null)
+                {
+                    var encoderParams = new EncoderParameters(1);
+                    encoderParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 95L);
+                    img.Save(tempPath, jpegEncoder, encoderParams);
+                }
+                else
+                    img.Save(tempPath, ImageFormat.Jpeg);
+                File.Delete(filePath);
+                File.Move(tempPath, filePath);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Mirror] 水平鏡像失敗: {ex.Message}");
+            }
+        }
+
         /// <summary>產生縮圖並存成 _thumb.jpg 實體檔，前端用 thumbUrl 載入可避免 OOM。</summary>
         private static string CreateThumbnailFile(string filePath, int maxSize)
         {
@@ -949,7 +984,7 @@ namespace PhotoBoothWin.Bridge
                 if (jpegEncoder != null)
                 {
                     var encoderParams = new EncoderParameters(1);
-                    encoderParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 75L);
+                    encoderParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 88L);
                     thumb.Save(thumbPath, jpegEncoder, encoderParams);
                 }
                 else
@@ -989,7 +1024,7 @@ namespace PhotoBoothWin.Bridge
                 if (jpegEncoder != null)
                 {
                     var encoderParams = new EncoderParameters(1);
-                    encoderParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 75L);
+                    encoderParams.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 88L);
                     thumb.Save(ms, jpegEncoder, encoderParams);
                 }
                 else

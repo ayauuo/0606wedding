@@ -4,7 +4,7 @@ import { usePhotobooth } from '@/composables/usePhotobooth'
 import { useTakePicture, isCountdownMinus5Mode } from '@/composables/useTakePicture'
 import { useLiveView } from '@/composables/useLiveView'
 import FilterOptions from './FilterOptions.vue'
-import { useProjectVariant } from '@/composables/useProjectVariant'
+import { useProjectVariant, resolveTemplateAssetUrl } from '@/composables/useProjectVariant'
 
 const props = defineProps<{ isActive?: boolean }>()
 const {
@@ -18,6 +18,7 @@ const {
   captureResultsTemplateId,
   selectedFilter,
   buildFinalOutput,
+  reloadCaptureResultsFromHost,
   renderComposite,
   resetSession,
   callHost,
@@ -149,7 +150,8 @@ const onlyHalfPressMode = computed(
     String(import.meta.env.VITE_SHOOT_ONLY_HALF_PRESS ?? '').toLowerCase() === 'true'
 )
 
-/** 倒數與對焦參數：可由 .env 覆寫。
+/** 倒數與對焦參數：可由 .env 覆寫（僅 1 號專案）。
+ * 2 號專案固定 5 秒倒數，不受 VITE_COUNTDOWN_* 影響。
  * VITE_FOCUS_AT_SECONDS=10,5 表示在倒數 10 秒與 5 秒時「觸發對焦」；預設 10,5。拍攝只在 T=0 一次。
  * VITE_COUNTDOWN_MINUS5_MODE=1：在 VITE_COUNTDOWN_SECONDS 基礎上倒數總長減 5 秒、對焦只觸發一次、音檔改為 倒數5秒拍照.mp3。 */
 function getCountdownOptions(): {
@@ -159,6 +161,19 @@ function getCountdownOptions(): {
   shootAfterFirstFocus: boolean
   countdownAudioFile?: string
 } {
+  const waitRaw = String(import.meta.env.VITE_FOCUS_WAIT_AFTER_MS ?? '350').trim()
+  const focusWaitAfterMs = Math.min(2000, Math.max(100, parseInt(waitRaw, 10) || 350))
+
+  if (projectVariant.value === '2') {
+    return {
+      countdownSeconds: 5,
+      focusAtSeconds: [5],
+      focusWaitAfterMs,
+      shootAfterFirstFocus: false,
+      countdownAudioFile: '倒數5秒拍照.mp3',
+    }
+  }
+
   const secRaw = String(import.meta.env.VITE_COUNTDOWN_SECONDS ?? '10').trim()
   const baseCountdown = Math.min(30, Math.max(1, parseInt(secRaw, 10) || 10))
   const defaultFocus = [10, 5]
@@ -166,8 +181,6 @@ function getCountdownOptions(): {
   const focusAtSeconds = focusRaw
     ? focusRaw.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n) && n >= 1 && n <= 30)
     : defaultFocus
-  const waitRaw = String(import.meta.env.VITE_FOCUS_WAIT_AFTER_MS ?? '350').trim()
-  const focusWaitAfterMs = Math.min(2000, Math.max(100, parseInt(waitRaw, 10) || 350))
   const shootRaw = String(import.meta.env.VITE_SHOOT_AFTER_FIRST_FOCUS ?? '0').trim()
   const shootAfterFirstFocus = shootRaw === '1' || shootRaw.toLowerCase() === 'true'
 
@@ -254,13 +267,33 @@ const shootRootStyle = computed(() => {
 })
 
 /**
- * 拍照區尺寸。濾鏡／貼圖模式時改為「與合成 slot 同比例」，讓編輯時所見位置與合成後一致。
+ * 拍照區尺寸。濾鏡模式改為合成圖比例（1205×1795），避免直式合成圖在寬框內左右留白。
  */
-/** 與拍照／選片頁相同外框尺寸；濾鏡僅改 canvas 顯示，不另改版面 */
-const pictureAreaStyle = computed(() => ({
-  width: `${tp.pictureAreaWidth}px`,
-  height: `${tp.pictureAreaHeight}px`,
-}))
+const pictureAreaStyle = computed(() => {
+  if (showFilterOptions.value && selectedTemplate.value) {
+    const tpl = selectedTemplate.value
+    const aspect = tpl.width / tpl.height
+    const maxH =
+      typeof window !== 'undefined'
+        ? Math.min(window.innerHeight * 0.55, window.innerHeight - 380, 680)
+        : 680
+    const maxW = typeof window !== 'undefined' ? window.innerWidth * 0.7 : 840
+    let h = maxH
+    let w = h * aspect
+    if (w > maxW) {
+      w = maxW
+      h = w / aspect
+    }
+    return {
+      width: `${Math.round(w)}px`,
+      height: `${Math.round(h)}px`,
+    }
+  }
+  return {
+    width: `${tp.pictureAreaWidth}px`,
+    height: `${tp.pictureAreaHeight}px`,
+  }
+})
 
 /** 左側縮圖容器：與右側大圖同比例（讀取框圖大小），避免左邊裁切跑掉 */
 const THUMB_HEIGHT = 203
@@ -275,14 +308,29 @@ const thumbWrapStyle = computed(() => {
   return { width: `${widthPx}px`, height: `${THUMB_HEIGHT}px` }
 })
 
-/** 框圖 .cover：拍完後用選中格的框，拍攝中用目前格的框；與大圖同用 100% 填滿容器，不溢出 */
-const coverStyle = computed(() => {
-  const url = tp.shootingDone
+function currentShootFramePath(): string {
+  return tp.shootingDone
     ? tp.getCurrentFrameUrl(tp.currentMainIndex - 1)
     : tp.coverFrameUrl
+}
+
+function isThumbShowingLiveView(itemId: number): boolean {
+  const idx = itemId - 1
+  return (
+    (!!hostLiveViewDataUrl.value &&
+      tp.isBurstShooting &&
+      idx === currentShootingIndex.value) ||
+    (!!hostLiveViewDataUrl.value && isReshooting.value && tp.currentMainIndex === itemId)
+  )
+}
+
+/** 框圖 .cover：與拍照區同尺寸貼合，框線蓋在 Live View 上 */
+const coverStyle = computed(() => {
+  const url = currentShootFramePath()
+  const resolved = url ? resolveTemplateAssetUrl(url) : ''
   return {
-    backgroundImage: url ? `url('${url}')` : 'none',
-    backgroundSize: 'contain',
+    backgroundImage: resolved ? `url('${resolved}')` : 'none',
+    backgroundSize: '100% 100%',
     backgroundPosition: 'center',
     backgroundRepeat: 'no-repeat',
   }
@@ -555,12 +603,6 @@ async function drawCompositePreview() {
     if (gen !== compositePreviewGen || !showFilterOptions.value) return
 
     const dpr = window.devicePixelRatio || 1
-    const scale = Math.min(displayW / tpl.width, displayH / tpl.height)
-    const drawW = tpl.width * scale
-    const drawH = tpl.height * scale
-    const dx = (displayW - drawW) / 2
-    const dy = (displayH - drawH) / 2
-
     const cw = Math.round(displayW * dpr)
     const ch = Math.round(displayH * dpr)
     canvas.width = cw
@@ -570,11 +612,12 @@ async function drawCompositePreview() {
 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
     ctx.save()
     ctx.scale(dpr, dpr)
-    ctx.fillStyle = '#fff'
-    ctx.fillRect(0, 0, displayW, displayH)
-    ctx.drawImage(off, 0, 0, tpl.width, tpl.height, dx, dy, drawW, drawH)
+    ctx.clearRect(0, 0, displayW, displayH)
+    ctx.drawImage(off, 0, 0, tpl.width, tpl.height, 0, 0, displayW, displayH)
     ctx.restore()
     off.width = 1
     off.height = 1
@@ -610,13 +653,15 @@ watch(showFilterOptions, async (visible) => {
   else stopFilterCountdown()
   if (!props.isActive || !shootLayoutReady.value) return
   await relayoutLeftPanel()
+  if (visible) scheduleCompositePreview()
 })
 
 /** 左側縮圖上的外匡 style（每格各自框） */
 function thumbCoverStyle(frameUrl: string) {
+  const resolved = frameUrl ? resolveTemplateAssetUrl(frameUrl) : ''
   return {
-    backgroundImage: frameUrl ? `url('${frameUrl}')` : 'none',
-    backgroundSize: 'contain',
+    backgroundImage: resolved ? `url('${resolved}')` : 'none',
+    backgroundSize: '100% 100%',
     backgroundPosition: 'center',
     backgroundRepeat: 'no-repeat',
   }
@@ -769,7 +814,7 @@ async function startBurstShootEdsdk() {
     } catch (e) {
       shootLog(`連拍 第 ${i + 1} 張 runCountdown 錯誤: ${e instanceof Error ? e.message : e}`)
     }
-    // 拍照當下擷取目前 Live View 並做鏡像（與 captureFrame 相同效果）；有擷取到則優先使用
+    // 拍照當下擷取 Live View 鏡像版作為後備（相機原圖失敗時使用；成功時 C# 已對原圖做水平鏡像）
     let capturedMirroredUrl = ''
     if (hostLiveViewDataUrl.value) {
       try {
@@ -780,18 +825,17 @@ async function startBurstShootEdsdk() {
     }
     shootLog(`連拍 第 ${i + 1}/${count} 張：呼叫 take_one_shot_edsdk（T=0 立即拍攝）`)
     try {
-      const res = (await callHost('take_one_shot_edsdk', { index: i, shotCount: count, forceWithoutAf: getForceWithoutAf() })) as { photoUrl?: string; dataUrl?: string; thumbUrl?: string }
-      const urlFromHost = res?.thumbUrl ?? res?.dataUrl ?? ''
-      const url = capturedMirroredUrl || urlFromHost
-      console.log('[Vue] 收到 C# 回傳:', { hasDataUrl: !!res?.dataUrl, dataUrlLen: res?.dataUrl?.length, photoUrl: res?.photoUrl })
+      const res = (await callHost('take_one_shot_edsdk', { index: i, shotCount: count, forceWithoutAf: getForceWithoutAf() })) as ShotHostResponse
+      const { captureUrl, displayUrl } = resolveShotUrls(res, capturedMirroredUrl)
+      console.log('[Vue] 收到 C# 回傳:', { photoUrl: res?.photoUrl, thumbUrl: res?.thumbUrl, captureUrl: !!captureUrl })
       // #region agent log
-      debugLog('ScreenShoot.vue:startBurstShootEdsdk', 'TAKE_ONE_SHOT_RETURNED', { shotIndex: i, hasUrl: !!url }, 'H1')
-      if (!url) debugLog('ScreenShoot.vue:startBurstShootEdsdk', 'EMPTY_URL_NO_THUMB_UPDATE', { shotIndex: i, resultsLen: results.length }, 'H3')
+      debugLog('ScreenShoot.vue:startBurstShootEdsdk', 'TAKE_ONE_SHOT_RETURNED', { shotIndex: i, hasUrl: !!captureUrl }, 'H1')
+      if (!captureUrl) debugLog('ScreenShoot.vue:startBurstShootEdsdk', 'EMPTY_URL_NO_THUMB_UPDATE', { shotIndex: i, resultsLen: results.length }, 'H3')
       // #endregion
-      shootLog(`連拍 第 ${i + 1}/${count} 張 take_one_shot 回傳 url=${url ? '有' : '無'}`)
-      if (url) {
-        results[i] = url
-        thumbUrls.value = [...thumbUrls.value.slice(0, i), url, ...thumbUrls.value.slice(i + 1)]
+      shootLog(`連拍 第 ${i + 1}/${count} 張 take_one_shot 回傳 capture=${captureUrl ? '有' : '無'}`)
+      if (captureUrl || displayUrl) {
+        applyShotToArrays(i, captureUrl, displayUrl, results, thumbUrls.value)
+        thumbUrls.value = [...thumbUrls.value]
       }
       // 拍完後：短暫顯示剛拍的縮圖，再重啟 Live View，等恢復後再拍下一張
       if (i < count - 1) {
@@ -902,8 +946,8 @@ async function onNext() {
   }).catch(() => {})
   // #endregion
   if (tp.shootingDone) {
-    // 進入濾鏡模式前先停止 Live View，避免 60fps 更新 hostLiveViewDataUrl 導致主線程被佔滿、drawFilterPreview 的 rAF 永遠跑不到
     if (hasWebView()) await stopLiveViewWithClear('filter_enter').catch(() => {})
+    if (hasWebView()) await reloadCaptureResultsFromHost()
     showFilterOptions.value = true
     await relayoutLeftPanel()
     // #region agent log
@@ -1039,18 +1083,21 @@ async function onAgain() {
   }
   shootLog(`onAgain 呼叫 take_one_shot_edsdk idx=${idx}`)
   try {
-    const res = (await callHost('take_one_shot_edsdk', { index: idx, shotCount: shotCountVal, forceWithoutAf: getForceWithoutAf() })) as { photoUrl?: string; dataUrl?: string; thumbUrl?: string }
-    const urlFromHost = res?.thumbUrl ?? res?.dataUrl ?? ''
-    const url = capturedMirroredUrl || urlFromHost
-    console.log('[Vue] 收到 C# 回傳 (onAgain):', { hasDataUrl: !!res?.dataUrl, dataUrlLen: res?.dataUrl?.length, photoUrl: res?.photoUrl })
+    const res = (await callHost('take_one_shot_edsdk', { index: idx, shotCount: shotCountVal, forceWithoutAf: getForceWithoutAf() })) as ShotHostResponse
+    const { captureUrl, displayUrl } = resolveShotUrls(res, capturedMirroredUrl)
+    console.log('[Vue] 收到 C# 回傳 (onAgain):', { photoUrl: res?.photoUrl, thumbUrl: res?.thumbUrl, captureUrl: !!captureUrl })
     // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/60461173-9774-483b-a750-822bb1590c42', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'ScreenShoot.vue:onAgain:after_take', message: 'take_one_shot_edsdk returned', data: { idx, hasUrl: !!url, urlLen: url?.length ?? 0 }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'H2' }) }).catch(() => {})
+    fetch('http://127.0.0.1:7242/ingest/60461173-9774-483b-a750-822bb1590c42', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'ScreenShoot.vue:onAgain:after_take', message: 'take_one_shot_edsdk returned', data: { idx, hasUrl: !!captureUrl, urlLen: captureUrl?.length ?? 0 }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'H2' }) }).catch(() => {})
     // #endregion
-    if (url) {
-      // 依格號固定長度更新，避免 thumbUrls 為空或較短時 .map 無法放入補拍照片（見 debug.log burst_completed resultsLen:0）
-      const next = Array.from({ length: shotCountVal }, (_, i) => (i === idx ? url : (thumbUrls.value[i] ?? '')))
-      thumbUrls.value = next
-      setCaptureResults([...next])
+    if (captureUrl || displayUrl) {
+      const nextCapture = Array.from({ length: shotCountVal }, (_, i) =>
+        i === idx ? (captureUrl || displayUrl) : (captureResults.value[i] ?? thumbUrls.value[i] ?? '')
+      )
+      const nextDisplay = Array.from({ length: shotCountVal }, (_, i) =>
+        i === idx ? (displayUrl || captureUrl) : (thumbUrls.value[i] ?? captureResults.value[i] ?? '')
+      )
+      thumbUrls.value = nextDisplay
+      setCaptureResults(nextCapture)
       // #region agent log
       fetch('http://127.0.0.1:7242/ingest/60461173-9774-483b-a750-822bb1590c42', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'ScreenShoot.vue:onAgain:after_update', message: 'after thumbUrls set', data: { idx, newThumbLen: thumbUrls.value.length, shotCount: shotCountVal, hasUrlAtIdx: !!(thumbUrls.value[idx]) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'post-fix', hypothesisId: 'H4' }) }).catch(() => {})
       // #endregion
@@ -1103,6 +1150,30 @@ function onRetryCamera() {
 function hasWebView(): boolean {
   const w = typeof window !== 'undefined' ? window : null
   return !!(w && (w as unknown as { chrome?: { webview?: unknown } }).chrome?.webview)
+}
+
+type ShotHostResponse = { photoUrl?: string; dataUrl?: string; thumbUrl?: string }
+
+/** 左側縮圖用縮圖 URL；合成用相機原圖 URL。原圖由 C# 存檔時已水平鏡像，與 Live View 預覽一致。 */
+function resolveShotUrls(res: ShotHostResponse | undefined, liveViewFallback = '') {
+  const photoUrl = res?.photoUrl?.trim() ?? ''
+  const thumbUrl = res?.thumbUrl?.trim() ?? ''
+  const dataUrl = res?.dataUrl?.trim() ?? ''
+  const captureUrl = photoUrl || thumbUrl || dataUrl || liveViewFallback || ''
+  const displayUrl = thumbUrl || photoUrl || dataUrl || liveViewFallback || ''
+  return { captureUrl, displayUrl }
+}
+
+function applyShotToArrays(
+  index: number,
+  captureUrl: string,
+  displayUrl: string,
+  results: string[],
+  thumbs: string[]
+) {
+  if (!captureUrl && !displayUrl) return
+  results[index] = captureUrl || displayUrl
+  thumbs[index] = displayUrl || captureUrl
 }
 
 /** 等版面穩定後再算左側面板位置，避免框圖／JS 尚未載完就計算導致位置錯誤（競態） */
@@ -1349,7 +1420,7 @@ watch(
                 <img
                   :id="`shoot-page-${item.id}`"
                   class="shoot-page"
-                  :class="{ 'shoot-page--live-view-mirror': (tp.isBurstShooting && item.id - 1 === currentShootingIndex && hostLiveViewDataUrl) || (isReshooting && tp.currentMainIndex === item.id && hostLiveViewDataUrl) }"
+                  :class="{ 'shoot-page--live-view-mirror': isThumbShowingLiveView(item.id) }"
                   :alt="`縮圖 ${item.id}`"
                   :src="(tp.isBurstShooting && item.id - 1 === currentShootingIndex && hostLiveViewDataUrl) || (isReshooting && tp.currentMainIndex === item.id && hostLiveViewDataUrl) ? hostLiveViewDataUrl : (item.url || item.frameUrl)"
                 />
@@ -1419,7 +1490,7 @@ watch(
           />
           <!-- 預覽與拍照皆由 C# 推送：EDSDK Live View 即時預覽、拍完顯示選中照片；重拍時也要顯示 Live View -->
           <img
-            v-show="hostLiveViewDataUrl && (!tp.shootingDone || isReshooting)"
+            v-show="hostLiveViewDataUrl && tp.frameOverlayReady && (!tp.shootingDone || isReshooting)"
             class="host-live-view-img"
             :src="hostLiveViewDataUrl"
             alt="即時預覽"
@@ -1628,6 +1699,14 @@ watch(
     min-height: 125px;
   }
 
+  /* 濾鏡模式：預覽區依合成圖比例，取消 zoom 與白底 */
+  &.is-filter-mode {
+    .picture-area {
+      zoom: 1;
+      background: transparent;
+    }
+  }
+
   /* 濾鏡／貼圖頁倒數：畫面右上角（相對 .screen--shoot 全屏） */
   .filter-countdown {
     position: absolute;
@@ -1709,9 +1788,9 @@ watch(
       opacity: 1;
     }
 
-    /* 濾鏡階段：維持原本垂直置中，不額外水平位移 */
+    /* 濾鏡階段：垂直置中，整欄濾鏡選項左移 50px */
     &.has-filter-column.is-positioned {
-      transform: translateY(calc(-50% - clamp(24px, 4vh, 64px)));
+      transform: translateY(calc(-50% - clamp(24px, 4vh, 64px))) translateX(-50px);
     }
 
     /* 拍照階段：縮圖列再往左；數值愈負愈左（例：-50px） */
@@ -1825,10 +1904,10 @@ watch(
     }
 
     .thumb-frame__wrap {
-      background-color: bisque;
       position: relative;
       display: flex;
       flex-shrink: 0;
+      overflow: hidden;
       /* 寬高由 thumbWrapStyle 依框圖比例決定，與右側大圖一致 */
 
       /* 與右側大圖一致：照片填滿框、無白邊；cover 避免正方形版型（bk03）上下留白 */
@@ -1840,7 +1919,6 @@ watch(
         object-position: center;
         background-color: white;
 
-        /* 左側縮圖顯示即時 Live View 時也做水平鏡像，與主預覽一致 */
         &.shoot-page--live-view-mirror {
           transform: scaleX(-1);
         }
@@ -1969,18 +2047,21 @@ watch(
     position: relative;
     display: flex;
     align-items: center;
-    overflow: visible;
+    /* 裁切 Live View／zoom 外溢；框外由 .cover 框圖不透明區遮住，勿設黑底否則會多一圈黑框 */
+    overflow: hidden;
     flex-shrink: 0;
     /*
-     * transform: scale() 不減少版面高度，單張大框會把按鈕推出視窗、必須捲動。
-     * zoom 會一併縮小排版佔位（Chromium / WebView2），與 --shoot-preview-scale 一致；勿與 transform scale 併用。
-     * 設計稿目標：預覽約佔畫面寬 65～70%、高約 55～60%（500px 框圖 × previewScale）。
+     * zoom 會一併縮小排版佔位（Chromium / WebView2），與 --shoot-preview-scale 一致。
+     * 濾鏡模式由 pictureAreaStyle 依合成圖比例算尺寸，不再 zoom 放大。
      */
     zoom: var(--shoot-preview-scale, 1.35);
     max-width: 70vw;
     max-height: min(55vh, calc(100vh - 380px));
-    /* 固定與標題間距；拍照中／拍完後相同，避免 is-preview 切換時跳動 */
     margin-top: clamp(8px, 1.5vh, 16px);
+
+    .shoot-main-preview--canvas {
+      background: transparent;
+    }
 
     .shoot-camera-error {
       position: absolute;
@@ -2085,11 +2166,11 @@ watch(
       z-index: 9;
       background-position: center;
       background-repeat: no-repeat;
-      background-size: contain;
+      background-size: 100% 100%;
       pointer-events: none;
     }
 
-    /* EDSDK Live View 由 C# 推送；前端水平鏡像顯示，與拍照擷取結果一致 */
+    /* Live View：依版型框寬高 object-fit cover；框圖 .cover 疊在上層，挖空處才看得到相機 */
     .host-live-view-img {
       position: absolute;
       top: 0;

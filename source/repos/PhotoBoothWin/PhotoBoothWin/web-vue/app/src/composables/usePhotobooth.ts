@@ -23,6 +23,19 @@ const { projectVariant, getChooseLayoutPreview, getQrCodePageFrame } = useProjec
 /** 合成／預覽共用：圖片載入快取 */
 const imageLoadCache = new Map<string, Promise<HTMLImageElement>>()
 
+function clearImageLoadCache() {
+  imageLoadCache.clear()
+}
+
+function getOutputJpegQuality(): number {
+  const raw = import.meta.env.VITE_JPEG_QUALITY
+  if (typeof raw === 'string' && raw.trim()) {
+    const q = parseFloat(raw.trim())
+    if (!Number.isNaN(q) && q > 0 && q <= 1) return q
+  }
+  return 0.95
+}
+
 function loadCachedImage(src: string): Promise<HTMLImageElement> {
   let pending = imageLoadCache.get(src)
   if (!pending) {
@@ -297,10 +310,10 @@ function buildTemplatesProject2(): Template[] {
     p2Template('bk02', 9, '4x6', 383, 512, SLOTS_V2_BK01_04, 1.35),
     p2Template('bk03', 9, '4x6', 383, 512, SLOTS_V2_BK01_04, 1.35),
     p2Template('bk04', 9, '4x6', 383, 512, SLOTS_V2_BK01_04, 1.35),
-    p2Template('bk05', 8, '4x6_2IN', 460, 330, SLOTS_V2_BK05_08, 1.8),
-    p2Template('bk06', 8, '4x6_2IN', 460, 330, SLOTS_V2_BK05_08, 1.8),
-    p2Template('bk07', 8, '4x6_2IN', 460, 330, SLOTS_V2_BK05_08, 1.8),
-    p2Template('bk08', 8, '4x6_2IN', 460, 330, SLOTS_V2_BK05_08, 1.8),
+    p2Template('bk05', 4, '4x6_2IN', 460, 330, SLOTS_V2_BK05_08, 1.8),
+    p2Template('bk06', 4, '4x6_2IN', 460, 330, SLOTS_V2_BK05_08, 1.8),
+    p2Template('bk07', 4, '4x6_2IN', 460, 330, SLOTS_V2_BK05_08, 1.8),
+    p2Template('bk08', 4, '4x6_2IN', 460, 330, SLOTS_V2_BK05_08, 1.8),
     p2Template('bk09', 8, '4x6', 220, 150, SLOTS_V2_BK09, 2.5),
     p2Template('bk10', 9, '4x6', 270, 270, SLOTS_V2_BK10, 1.8),
   ]
@@ -624,6 +637,8 @@ export function usePhotobooth() {
     tpl: Template,
     options: RenderCompositeOptions
   ): Promise<void> {
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
     const {
       captureUrls: rawUrls,
       filterId,
@@ -828,21 +843,27 @@ export function usePhotobooth() {
       })
   }
 
+  /** 從 C# 讀取相機原圖 URL（https://photos/…），供合成／濾鏡預覽使用 */
+  async function reloadCaptureResultsFromHost(): Promise<boolean> {
+    try {
+      const res = (await callHost('load_captures', {})) as { urls?: string[] }
+      if (Array.isArray(res.urls) && res.urls.length > 0 && res.urls.some((u) => !!u)) {
+        clearImageLoadCache()
+        captureResults.value = res.urls
+        captureResultsTemplateId.value = selectedTemplate.value?.id ?? null
+        return true
+      }
+    } catch {
+      // ignore
+    }
+    return false
+  }
+
   async function buildFinalOutput(options?: { alreadyOnProcessing?: boolean }) {
     const tpl = selectedTemplate.value
     if (!tpl) return
-    if (!captureResults.value.length) {
-      try {
-        const res = await callHost('load_captures', {}) as { urls?: string[] }
-        if (Array.isArray(res.urls) && res.urls.length > 0) {
-          captureResults.value = res.urls
-          captureResultsTemplateId.value = tpl.id
-        }
-      } catch {
-        // ignore
-      }
-    }
-    if (!captureResults.value.length) return
+    const reloaded = await reloadCaptureResultsFromHost()
+    if (!reloaded && !captureResults.value.length) return
     try {
       const canvas = document.createElement('canvas')
       canvas.width = tpl.width
@@ -858,7 +879,7 @@ export function usePhotobooth() {
         includeStickers: true,
       })
 
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.9)
+      const dataUrl = canvas.toDataURL('image/jpeg', getOutputJpegQuality())
       canvas.width = 1
       canvas.height = 1
       const saveRes = await callHost('save_image', { imageData: dataUrl }) as { filePath?: string }
@@ -996,6 +1017,7 @@ export function usePhotobooth() {
     setCaptureVideoBlob,
     resetSession,
     buildFinalOutput,
+    reloadCaptureResultsFromHost,
     renderComposite,
     goToPrintingThenIdle,
     runDevStartPage,

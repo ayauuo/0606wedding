@@ -23,6 +23,17 @@ function p2(folder: string, file: string): string {
   return `/assets/templates/${folder}/2/${file}`
 }
 
+/** WebView2 虛擬網址下，將 /assets/... 轉成可載入的完整 URL（避免打包後 Image／mask 載不到框圖） */
+export function resolveTemplateAssetUrl(path: string): string {
+  if (!path || /^(https?:|data:|blob:)/i.test(path)) return path
+  try {
+    const normalized = path.startsWith('/') ? path : `/${path}`
+    return new URL(normalized, window.location.href).href
+  } catch {
+    return path
+  }
+}
+
 export function useProjectVariant() {
   const isProject2 = computed(() => projectVariant.value === '2')
 
@@ -184,5 +195,6 @@ export function useProjectVariant() {
     getShootPageAsset,
     getShootFrameUrl,
     getShootTexUrl,
+    resolveTemplateAssetUrl,
   }
 }

@@ -30,6 +30,8 @@ interface ImportMetaEnv {
   readonly VITE_BK08_SYNTHESIS?: string
   readonly VITE_BK09_SYNTHESIS?: string
   readonly VITE_BK10_SYNTHESIS?: string
+  /** 合成輸出 JPEG 品質 0～1（預設 0.95） */
+  readonly VITE_JPEG_QUALITY?: string
   /** 測試模式快速倒數：1/true 時拍照改為 2 秒倒數 */
   readonly VITE_TEST_FAST_COUNTDOWN?: string
   /** 立刻拍：1/true 時跳過倒數，啟動後強制立即拍攝 */

@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import type { Template } from '@/types/photobooth'
-import { useProjectVariant } from '@/composables/useProjectVariant'
+import { useProjectVariant, resolveTemplateAssetUrl } from '@/composables/useProjectVariant'
 
 /** 無版型時的預設擷取尺寸 */
 const DEFAULT_CAPTURE_W = 544
@@ -39,6 +39,8 @@ export function useTakePicture(selectedTemplate: () => Template | null) {
   const reshootUsedSlots = ref<Set<number>>(new Set())
   const currentMainIndex = ref(1)
   const coverFrameUrl = ref('')
+  /** 框圖已成功載入（打包／WebView2 下避免 Live View 在遮罩前就顯示） */
+  const frameOverlayReady = ref(false)
   const pictureAreaWidth = ref(DEFAULT_CAPTURE_W)
   const pictureAreaHeight = ref(DEFAULT_CAPTURE_H)
   /** 已為哪個版型設定過拍照區尺寸（同版型只載入第一次，後續沿用不重算） */
@@ -68,8 +70,8 @@ export function useTakePicture(selectedTemplate: () => Template | null) {
     return new Promise((resolve, reject) => {
       const img = new Image()
       img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
-      img.onerror = () => reject(new Error('Frame image load failed'))
-      img.src = url
+      img.onerror = () => reject(new Error(`Frame image load failed: ${url}`))
+      img.src = resolveTemplateAssetUrl(url)
     })
   }
 
@@ -86,21 +88,42 @@ export function useTakePicture(selectedTemplate: () => Template | null) {
   async function setCoverAndVideoSize(index = 0): Promise<void> {
     const t = selectedTemplate()
     const templateId = t?.id ?? null
-    if (templateId === lastSizeTemplateId.value) {
+    frameOverlayReady.value = false
+    // 兩者皆 null 時不可視為「同版型」，否則 onMounted 會跳過尺寸初始化（預設 544×471 → 進頁後才跳變）
+    if (templateId !== null && templateId === lastSizeTemplateId.value) {
       setCoverFrameOnly(index)
+      frameOverlayReady.value = true
       return
     }
-    const url = getCurrentFrameUrl(0)
     let w: number
     let h: number
-    try {
-      const size = await loadFrameDimensions(url)
-      w = size.w
-      h = size.h
-    } catch {
-      const fallback = getTemplateCaptureSize()
-      w = fallback.w
-      h = fallback.h
+    // 專案 1／2：預覽區一律用版型 captureW×captureH，與框圖設計尺寸一致；不依 view01 像素避免連拍換框時比例跳動
+    if (templateId !== null) {
+      const fixed = getTemplateCaptureSize()
+      w = fixed.w
+      h = fixed.h
+      const url = getCurrentFrameUrl(0)
+      try {
+        await loadFrameDimensions(url)
+        frameOverlayReady.value = true
+      } catch {
+        frameOverlayReady.value = false
+        console.warn('[useTakePicture] 框圖預載失敗，Live View 可能無遮罩:', url)
+      }
+    } else {
+      const url = getCurrentFrameUrl(0)
+      try {
+        const size = await loadFrameDimensions(url)
+        w = size.w
+        h = size.h
+        frameOverlayReady.value = true
+      } catch {
+        const fallback = getTemplateCaptureSize()
+        w = fallback.w
+        h = fallback.h
+        frameOverlayReady.value = false
+        console.warn('[useTakePicture] 框圖載入失敗:', url)
+      }
     }
     pictureAreaWidth.value = w
     pictureAreaHeight.value = h
@@ -113,6 +136,7 @@ export function useTakePicture(selectedTemplate: () => Template | null) {
    */
   function setCoverFrameOnly(index: number): void {
     coverFrameUrl.value = getCurrentFrameUrl(index)
+    frameOverlayReady.value = true
   }
 
   /** 倒數從 11 開始（音檔前段「開始拍照了」對齊 11），顯示 11 → 10 → … → 1；在音檔結束前 0.5 秒就 resolve，讓拍照提早觸發 */
@@ -355,6 +379,7 @@ export function useTakePicture(selectedTemplate: () => Template | null) {
     reshootUsedSlots,
     currentMainIndex,
     coverFrameUrl,
+    frameOverlayReady,
     pictureAreaWidth,
     pictureAreaHeight,
     shotCount,
